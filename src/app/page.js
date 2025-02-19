@@ -47,7 +47,7 @@ export default function Home() {
                   ? 'bg-blue-100 ml-12' 
                   : 'bg-gray-100 mr-12'
               }`}
-            > Response:
+            >
               {message.content}
             </div>
           ))}
