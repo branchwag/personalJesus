@@ -10,3 +10,5 @@ ollama run deepseek-r1:1.5b
 npm run dev
 ```
 Then, visit localhost:3000 in your browser.
+
+![Demo Screenshot](demo.png)
