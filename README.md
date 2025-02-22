@@ -14,4 +14,4 @@ Then, visit localhost:3000 in your browser.
 (yes, this prompt is a joke. Just a fun question to ask a mini AI ;) )
 
 
-![Demo Screenshot](demo.png)
+![Demo Screenshot](demo2.png)

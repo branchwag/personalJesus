@@ -5,34 +5,66 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [currentResponse, setCurrentResponse] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
-
+    
     const userMessage = { role: 'user', content: input };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setCurrentResponse('');
 
-    try { 
+    try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ message: input }),
+        },
+        body: JSON.stringify({ message: input }),
+      });
+
+      // Create a new reader for the response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Add an empty assistant message that we'll update
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Decode the stream
+        const chunk = decoder.decode(value);
+        
+        // Update the current response
+        setCurrentResponse(prev => {
+          const newResponse = prev + chunk;
+          // Update the last message in the messages array
+          setMessages(prev => {
+            const newMessages = [...prev];
+            newMessages[newMessages.length - 1] = {
+              role: 'assistant',
+              content: newResponse
+            };
+            return newMessages;
           });
-
-      const data = await response.json();
-
-      setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+          return newResponse;
+        });
+      }
     } catch (error) {
-        console.error('Error:', error);
-        setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, there was an error processing your request.' }]);
+      console.error('Error:', error);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Sorry, there was an error processing your request.'
+      }]);
     }
-
+    
     setIsLoading(false);
+    setCurrentResponse('');
   };
 
   return (
@@ -42,16 +74,16 @@ export default function Home() {
           {messages.map((message, index) => (
             <div 
               key={index} 
-              className={`p-4 rounded-lg bg-gray-900 text-white ${
+              className={`p-4 rounded-lg ${
                 message.role === 'user' 
                   ? 'bg-gray-100 ml-12' 
-                  : 'bg-gray-100 mr-12'
+                  : 'bg-gray-900 text-white mr-12'
               }`}
             >
               {message.content}
             </div>
           ))}
-          {isLoading && (
+          {isLoading && currentResponse === '' && (
             <div className="bg-gray-800 text-white p-4 rounded-lg mr-12">
               Thinking...
             </div>
@@ -78,3 +110,4 @@ export default function Home() {
     </main>
   );
 }
+
