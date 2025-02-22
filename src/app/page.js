@@ -42,7 +42,7 @@ export default function Home() {
           {messages.map((message, index) => (
             <div 
               key={index} 
-              className={`p-4 rounded-lg text-black ${
+              className={`p-4 rounded-lg bg-gray-900 text-white ${
                 message.role === 'user' 
                   ? 'bg-blue-100 ml-12' 
                   : 'bg-gray-100 mr-12'
@@ -52,7 +52,7 @@ export default function Home() {
             </div>
           ))}
           {isLoading && (
-            <div className="bg-gray-100 p-4 rounded-lg mr-12">
+            <div className="bg-gray-800 text-white p-4 rounded-lg mr-12">
               Thinking...
             </div>
           )}

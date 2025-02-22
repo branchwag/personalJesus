@@ -15,8 +15,8 @@ export async function POST(req) {
     });
 
     const text = await response.text();
-    
-    const lines = text.split('\n').filter(line => line.trim());
+    const cleanText = text.replace(/<think>/g, '').replace(/<\/think>/g, '');
+    const lines = cleanText.split('\n').filter(line => line.trim());
     let fullResponse = '';
     
     for (const line of lines) {
