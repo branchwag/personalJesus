@@ -15,8 +15,7 @@ export async function POST(req) {
     });
 
     const text = await response.text();
-    const cleanText = text.replace(/<think>/g, '').replace(/<\/think>/g, '');
-    const lines = cleanText.split('\n').filter(line => line.trim());
+    const lines = text.split('\n').filter(line => line.trim());
     let fullResponse = '';
     
     for (const line of lines) {
@@ -30,7 +29,9 @@ export async function POST(req) {
       }
     }
 
-    return Response.json({ response: fullResponse });
+    const cleanedResponse = fullResponse.replace(/<think>|<\/think>/g, '');
+
+    return Response.json({ response: cleanedResponse });
   } catch (error) {
     console.error('Error details:', error);
     return Response.json({ 
