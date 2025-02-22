@@ -44,7 +44,7 @@ export default function Home() {
               key={index} 
               className={`p-4 rounded-lg bg-gray-900 text-white ${
                 message.role === 'user' 
-                  ? 'bg-blue-100 ml-12' 
+                  ? 'bg-gray-100 ml-12' 
                   : 'bg-gray-100 mr-12'
               }`}
             >
@@ -69,7 +69,7 @@ export default function Home() {
           <button 
             type="submit"
             disabled={isLoading}
-            className="px-4 py-2 bg-blue-500 text-white rounded disabled:bg-blue-300"
+            className="px-4 py-2 bg-gray-900 text-white rounded disabled:bg-gray-300"
           >
             Send
           </button>
