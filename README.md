@@ -32,6 +32,26 @@ A Rust implementation of a web app to interact with AI model.
 5. **Access the app**:
    Open your browser to [http://localhost:8080](http://localhost:8080)
 
+## CLI Tool
+
+A command-line interface is available for chatting from the terminal:
+
+```bash
+# One-shot: ask a question and get a response
+./target/release/pj "What is the capital of France?"
+
+# Interactive mode
+./target/release/pj
+```
+
+To use `pj` from anywhere, add this alias to your `~/.bashrc` (make sure `DATABASE_URL` points to the project's database so the CLI and web app share the same data):
+
+```bash
+alias pj='DATABASE_URL=/path/to/personalJesus/data/chat.db /path/to/personalJesus/target/release/pj'
+```
+
+The CLI shares the same SQLite database as the web app, so conversations are synced between both interfaces.
+
 ## Contributing
 
 Feel free to open issues or submit pull requests!
