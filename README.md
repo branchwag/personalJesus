@@ -1,4 +1,4 @@
-# Personal Jesus - Rust Edition 🎵
+# Personal Jesus 🎵
 
 *Lift up the receiver, I'll make you a believer* 🎵
 
@@ -21,7 +21,7 @@ A Rust implementation of a web app to interact with AI model.
 
    The first time you run this, it will:
    - Pull the Ollama image
-   - Pull the Mistral 7B model (~4.1GB)
+   - Pull the model
    - Build the Rust application
    - Start everything up
 
@@ -48,13 +48,13 @@ If you want to run it locally for development:
 
 2. **Pull the model**:
    ```bash
-   ollama pull mistral:7b
+   ollama pull [modelnamehere]
    ```
 
 3. **Set environment variables**:
    ```bash
    export OLLAMA_URL=http://localhost:11434
-   export MODEL_NAME=mistral:7b
+   export MODEL_NAME=[yourpreferredmodel]
    export PORT=8080
    ```
 
@@ -77,4 +77,4 @@ MIT
 ## Credits
 
 - Built with [Actix-web](https://actix.rs/)
-- Powered by [Ollama](https://ollama.ai/) and [Mistral AI](https://mistral.ai/)
+- Powered by [Ollama](https://ollama.ai/)

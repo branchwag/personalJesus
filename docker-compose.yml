@@ -27,8 +27,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Pulling mistral:7b model..."
-        ollama pull mistral:7b
+        echo "Pulling model..."
+        ollama pull qwen2.5:7b
         echo "Model pulled successfully!"
     restart: "no"
 
@@ -46,7 +46,7 @@ services:
       - RUST_LOG=info
       - PORT=8080
       - OLLAMA_URL=http://ollama:11434
-      - MODEL_NAME=mistral:7b
+      - MODEL_NAME=qwen2.5:7b
     restart: unless-stopped
 
 volumes:
