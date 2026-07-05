@@ -407,7 +407,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
+                    KeyCode::Esc | KeyCode::Char('q') => {
                         app.exit = true;
                     }
                     KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
@@ -478,7 +478,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             app.send_message();
         }
-        KeyCode::Tab | KeyCode::Esc => {
+        KeyCode::Tab => {
             app.focus = Focus::Sidebar;
         }
         KeyCode::Char(c) => {
