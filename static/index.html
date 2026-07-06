@@ -503,7 +503,7 @@
             btn.textContent = "Save " + lang;
             btn.addEventListener("click", async () => {
               const ext = { python: "py", javascript: "js", bash: "sh", ruby: "rb", go: "go", rust: "rs" }[block.language] || block.language || "sh";
-              const name = prompt("Filename (absolute or relative to server CWD):", "script." + ext);
+              const name = prompt("Save as:", "/tmp/script." + ext);
               if (!name) return;
               btn.textContent = "Saving...";
               btn.disabled = true;
