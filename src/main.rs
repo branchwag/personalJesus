@@ -59,7 +59,7 @@ async fn handle_chat(
     req: web::Json<ChatRequest>,
     pool: web::Data<DbPool>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://ollama:11434");
+    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
     let message = req.message.clone();
     let chat_id = req.chat_id;
@@ -96,7 +96,10 @@ async fn handle_chat(
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap();
     let request = OllamaRequest {
         model,
         prompt: message,
@@ -196,6 +199,13 @@ pub struct ToolChatResponse {
 pub struct ToolConfirmRequest {
     pub session_id: String,
     pub approved: bool,
+    pub modified_paths: Option<Vec<ModifiedPath>>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ModifiedPath {
+    pub index: usize,
+    pub path: String,
 }
 
 async fn handle_tool_chat(
@@ -203,7 +213,7 @@ async fn handle_tool_chat(
     pool: web::Data<DbPool>,
     sessions: web::Data<SessionMap>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://ollama:11434");
+    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
     let message = req.message.clone();
     let pool = pool.get_ref().clone();
@@ -310,7 +320,7 @@ async fn handle_tool_confirm(
     pool: web::Data<DbPool>,
     sessions: web::Data<SessionMap>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://ollama:11434");
+    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
     let pool = pool.get_ref().clone();
 
@@ -349,10 +359,21 @@ async fn handle_tool_confirm(
         })));
     }
 
+    let mut tool_calls = all_tool_calls;
+    if let Some(ref paths) = req.modified_paths {
+        for mp in paths {
+            if mp.index < tool_calls.len() {
+                if let Some(args) = tool_calls[mp.index].function.arguments.as_object_mut() {
+                    args.insert("path".to_string(), serde_json::Value::String(mp.path.clone()));
+                }
+            }
+        }
+    }
+
     let mut extra = state.messages;
 
     if req.approved {
-        for tc in &all_tool_calls {
+        for tc in &tool_calls {
             let result = match tools::execute_tool(tc) {
                 Ok(r) => r,
                 Err(e) => format!("Error: {e}"),
@@ -369,7 +390,7 @@ async fn handle_tool_confirm(
             role: "tool".to_string(),
             content: "The user declined to execute this tool call.".to_string(),
             tool_calls: None,
-            name: Some(all_tool_calls[0].function.name.clone()),
+            name: Some(tool_calls[0].function.name.clone()),
         });
     }
 
@@ -435,6 +456,25 @@ async fn handle_tool_confirm(
     }
 }
 
+#[derive(Deserialize)]
+struct WriteFileRequest {
+    path: String,
+    content: String,
+}
+
+async fn handle_write_file(req: web::Json<WriteFileRequest>) -> Result<HttpResponse> {
+    let path = &req.path;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            actix_web::error::ErrorInternalServerError(format!("mkdir error: {e}"))
+        })?;
+    }
+    std::fs::write(path, &req.content).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("write error: {e}"))
+    })?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({"ok": true, "path": path, "bytes": req.content.len()})))
+}
+
 async fn health() -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "ok"})))
 }
@@ -472,6 +512,7 @@ async fn main() -> std::io::Result<()> {
             .route("/api/chats", web::get().to(handle_list_chats))
             .route("/api/chats/{id}", web::delete().to(handle_delete_chat))
             .route("/api/chats/{id}/messages", web::get().to(handle_get_messages))
+            .route("/api/write-file", web::post().to(handle_write_file))
             .route("/health", web::get().to(health))
             .service(fs::Files::new("/", "./static").index_file("index.html"))
     })

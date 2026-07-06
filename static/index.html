@@ -170,48 +170,6 @@
         gap: 0.75rem;
       }
 
-      .mode-toggle {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: 0.8rem;
-        color: #6b7280;
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .mode-toggle input[type="checkbox"] {
-        appearance: none;
-        width: 2rem;
-        height: 1rem;
-        background-color: #374151;
-        border-radius: 0.5rem;
-        position: relative;
-        cursor: pointer;
-        transition: background-color 0.2s;
-      }
-
-      .mode-toggle input[type="checkbox"]::after {
-        content: "";
-        position: absolute;
-        width: 0.75rem;
-        height: 0.75rem;
-        border-radius: 50%;
-        background-color: #9ca3af;
-        top: 0.125rem;
-        left: 0.125rem;
-        transition: transform 0.2s, background-color 0.2s;
-      }
-
-      .mode-toggle input[type="checkbox"]:checked {
-        background-color: #2563eb;
-      }
-
-      .mode-toggle input[type="checkbox"]:checked::after {
-        transform: translateX(1rem);
-        background-color: #fff;
-      }
-
       .chat-container {
         flex: 1;
         overflow-y: auto;
@@ -374,6 +332,26 @@
         background-color: #ef4444;
       }
 
+      .save-btn {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.8rem;
+        background-color: #2563eb;
+        color: #fff;
+        border: none;
+        border-radius: 0.25rem;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .save-btn:hover {
+        background-color: #3b82f6;
+      }
+      .save-btn.saved {
+        background-color: #16a34a;
+        cursor: default;
+      }
+
       @media (max-width: 640px) {
         .sidebar {
           width: 200px;
@@ -403,10 +381,7 @@
         <div class="chat-header-left">
           <span>🎵 Personal Jesus 🎵</span>
         </div>
-        <label class="mode-toggle">
-          <input type="checkbox" id="codingModeToggle" />
-          <span>Coding mode</span>
-        </label>
+
       </div>
       <div class="chat-container" id="chatContainer">
         <div class="empty-state" id="emptyState">Select a chat or create a new one</div>
@@ -441,7 +416,7 @@
       const messageInput = document.getElementById("messageInput");
       const sendButton = document.getElementById("sendButton");
       const newChatBtn = document.getElementById("newChatBtn");
-      const codingModeToggle = document.getElementById("codingModeToggle");
+
       const toolModal = document.getElementById("toolModal");
       const toolCallsList = document.getElementById("toolCallsList");
       const confirmBtn = document.getElementById("confirmBtn");
@@ -450,7 +425,7 @@
       let isLoading = false;
       let activeChatId = null;
       let chats = [];
-      let codingMode = false;
+
       let pendingSessionId = null;
       let pendingToolCalls = [];
 
@@ -486,12 +461,61 @@
         }
       }
 
+      function extractCodeBlocks(text) {
+        const blocks = [];
+        const re = /```(\w*)\n([\s\S]*?)```/g;
+        let match;
+        while ((match = re.exec(text)) !== null) {
+          blocks.push({ language: match[1], code: match[2] });
+        }
+        return blocks;
+      }
+
+      async function saveCodeBlock(code, filename) {
+        try {
+          const res = await fetch("/api/write-file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filename, content: code }),
+          });
+        const data = await res.json();
+        if (res.ok) return "Saved: " + (data.path || filename);
+        else return "Error: " + (data.error || "save failed");
+        } catch (e) {
+          return "Error: " + e.message;
+        }
+      }
+
       function addMessage(content, role) {
         removeEmptyState();
         const messageDiv = document.createElement("div");
         messageDiv.className = "message " + role;
         messageDiv.textContent = content;
         chatContainer.appendChild(messageDiv);
+
+        if (role === "assistant") {
+          const blocks = extractCodeBlocks(content);
+          for (const block of blocks) {
+            if (!block.code.trim()) continue;
+            const lang = block.language || "script";
+            const btn = document.createElement("button");
+            btn.className = "save-btn";
+            btn.textContent = "Save " + lang;
+            btn.addEventListener("click", async () => {
+              const ext = { python: "py", javascript: "js", bash: "sh", ruby: "rb", go: "go", rust: "rs" }[block.language] || block.language || "sh";
+              const name = prompt("Filename (absolute or relative to server CWD):", "script." + ext);
+              if (!name) return;
+              btn.textContent = "Saving...";
+              btn.disabled = true;
+              const result = await saveCodeBlock(block.code, name);
+              btn.textContent = result;
+              if (result.startsWith("Saved")) btn.classList.add("saved");
+              btn.disabled = false;
+            });
+            chatContainer.appendChild(btn);
+          }
+        }
+
         chatContainer.scrollTop = chatContainer.scrollHeight;
         return messageDiv;
       }
@@ -574,7 +598,7 @@
           const chat = await res.json();
           chats.unshift(chat);
           renderChatList();
-          selectChat(chat.id);
+          await selectChat(chat.id);
         } catch (e) {
           console.error("Failed to create chat:", e);
         }
@@ -588,10 +612,13 @@
         }
       }
 
+      let pathInputs = [];
+
       function showToolModal(toolCalls, sessionId) {
         pendingToolCalls = toolCalls;
         pendingSessionId = sessionId;
         toolCallsList.innerHTML = "";
+        pathInputs = [];
 
         for (const tc of toolCalls) {
           const div = document.createElement("div");
@@ -604,33 +631,40 @@
           const detailDiv = document.createElement("div");
           detailDiv.className = "tool-call-detail";
           const args = tc.function.arguments || {};
-          let detail = "";
-          switch (tc.function.name) {
-            case "read_file":
-              detail = "Path: " + (args.path || "?");
-              break;
-            case "write_file":
-              detail = "Path: " + (args.path || "?") + "\nSize: " + (args.content ? args.content.length : 0) + " bytes";
-              break;
-            case "edit_file":
-              detail = "Path: " + (args.path || "?") + "\nReplace: " + (args.old_string || "") + "\nWith: " + (args.new_string || "");
-              break;
-            case "run_command":
-              detail = "Command: " + (args.command || "?");
-              break;
-            case "glob":
-              detail = "Pattern: " + (args.pattern || "?");
-              break;
-            case "grep":
-              detail = "Pattern: " + (args.pattern || "?") + "\nPath: " + (args.path || ".");
-              break;
-            case "read_directory":
-              detail = "Path: " + (args.path || "?");
-              break;
-            default:
-              detail = JSON.stringify(args, null, 2);
+
+          if (tc.function.name === "write_file") {
+            const pathLabel = document.createElement("div");
+            pathLabel.textContent = "Path:";
+            const pathInput = document.createElement("input");
+            pathInput.type = "text";
+            pathInput.value = args.path || "/tmp/script.sh";
+            pathInput.style.width = "100%";
+            pathInput.style.marginBottom = "0.5rem";
+            pathInput.style.fontFamily = "inherit";
+            pathInput.style.padding = "0.3rem";
+            pathInput.style.boxSizing = "border-box";
+            const sizeText = document.createElement("div");
+            sizeText.textContent = "Size: " + (args.content ? args.content.length : 0) + " bytes";
+            const previewText = document.createElement("div");
+            previewText.style.marginTop = "0.3rem";
+            previewText.style.fontSize = "0.8rem";
+            previewText.style.color = "#9ca3af";
+            previewText.textContent = (args.content || "").substring(0, 120) + ((args.content || "").length > 120 ? "..." : "");
+            detailDiv.appendChild(pathLabel);
+            detailDiv.appendChild(pathInput);
+            detailDiv.appendChild(sizeText);
+            detailDiv.appendChild(previewText);
+            pathInputs.push({ name: tc.function.name, index: pathInputs.length, input: pathInput });
+          } else if (tc.function.name === "edit_file") {
+            detailDiv.textContent = "Path: " + (args.path || "?") + "\nReplace: " + (args.old_string || "") + "\nWith: " + (args.new_string || "");
+          } else {
+            detailDiv.textContent = tc.function.name === "read_file" ? "Path: " + (args.path || "?")
+              : tc.function.name === "run_command" ? "Command: " + (args.command || "?")
+              : tc.function.name === "glob" ? "Pattern: " + (args.pattern || "?")
+              : tc.function.name === "grep" ? "Pattern: " + (args.pattern || "?") + "\nPath: " + (args.path || ".")
+              : tc.function.name === "read_directory" ? "Path: " + (args.path || "?")
+              : JSON.stringify(args, null, 2);
           }
-          detailDiv.textContent = detail;
 
           div.appendChild(nameDiv);
           div.appendChild(detailDiv);
@@ -665,7 +699,9 @@
           const data = await response.json();
           document.getElementById("loadingMessage")?.remove();
 
-          if (data.type === "text") {
+          if (!response.ok) {
+            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+          } else if (data.type === "text") {
             activeChatId = data.chat_id;
             if (!chats.find(c => c.id === data.chat_id)) {
               await loadChats();
@@ -689,72 +725,19 @@
         }
       }
 
-      async function sendNormalMessage() {
-        const message = messageInput.value.trim();
-        if (!message || isLoading) return;
-
-        if (!activeChatId) {
-          await createNewChat();
-        }
-
-        addMessage(message, "user");
-        messageInput.value = "";
-
-        isLoading = true;
-        sendButton.disabled = true;
-        const loadingDiv = addLoadingMessage();
-
-        try {
-          const response = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: activeChatId, message }),
-          });
-
-          const chatId = response.headers.get("X-Chat-Id");
-          if (chatId && !activeChatId) {
-            activeChatId = parseInt(chatId);
-            await loadChats();
-            selectChat(activeChatId);
-          }
-
-          loadingDiv.remove();
-
-          const assistantDiv = addMessage("", "assistant");
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            assistantDiv.textContent += chunk;
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-          }
-
-          const title = message.length > 50 ? message.substring(0, 50) + "..." : message;
-          updateChatTitle(activeChatId, title);
-        } catch (error) {
-          console.error("Error:", error);
-          loadingDiv.remove();
-          addMessage("Sorry, there was an error processing your request.", "assistant");
-        } finally {
-          isLoading = false;
-          sendButton.disabled = false;
-          messageInput.focus();
-        }
-      }
-
       async function sendMessage() {
-        if (codingMode) {
-          await sendCodingMessage();
-        } else {
-          await sendNormalMessage();
-        }
+        await sendCodingMessage();
       }
 
       async function handleToolConfirm() {
         if (!pendingSessionId) return;
+
+        const modified = [];
+        for (const pi of pathInputs) {
+          if (pi.input.value !== pendingToolCalls[pi.index]?.function?.arguments?.path) {
+            modified.push({ index: pi.index, path: pi.input.value });
+          }
+        }
 
         toolModal.classList.remove("visible");
         isLoading = true;
@@ -765,15 +748,22 @@
           const response = await fetch("/api/chat/tools/confirm", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: pendingSessionId, approved: true }),
+            body: JSON.stringify({
+              session_id: pendingSessionId,
+              approved: true,
+              modified_paths: modified.length > 0 ? modified : undefined,
+            }),
           });
 
           const data = await response.json();
           document.getElementById("loadingMessage")?.remove();
           pendingSessionId = null;
           pendingToolCalls = [];
+          pathInputs = [];
 
-          if (data.type === "text") {
+          if (!response.ok) {
+            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+          } else if (data.type === "text") {
             if (data.content) {
               addMessage(data.content, "assistant");
             }
@@ -811,7 +801,9 @@
           pendingSessionId = null;
           pendingToolCalls = [];
 
-          if (data.type === "text") {
+          if (!response.ok) {
+            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+          } else if (data.type === "text") {
             if (data.content) {
               addMessage(data.content, "assistant");
             }
@@ -836,10 +828,6 @@
       });
       confirmBtn.addEventListener("click", handleToolConfirm);
       denyBtn.addEventListener("click", handleToolDeny);
-
-      codingModeToggle.addEventListener("change", () => {
-        codingMode = codingModeToggle.checked;
-      });
 
       document.getElementById("toggleSidebar").addEventListener("click", () => {
         const sidebar = document.getElementById("sidebar");

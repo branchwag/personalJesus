@@ -319,7 +319,10 @@ pub async fn chat_with_ollama(
     messages: Vec<OllamaChatMessage>,
     tools: Option<Vec<tools::ToolDefinition>>,
 ) -> Result<OllamaChatResponse, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("Failed to build reqwest client: {e}"))?;
     let request = OllamaChatRequest {
         model: model.to_string(),
         messages,
