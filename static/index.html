@@ -620,7 +620,8 @@
         toolCallsList.innerHTML = "";
         pathInputs = [];
 
-        for (const tc of toolCalls) {
+        for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+          const tc = toolCalls[tcIdx];
           const div = document.createElement("div");
           div.className = "tool-call-item";
 
@@ -654,7 +655,7 @@
             detailDiv.appendChild(pathInput);
             detailDiv.appendChild(sizeText);
             detailDiv.appendChild(previewText);
-            pathInputs.push({ name: tc.function.name, index: pathInputs.length, input: pathInput });
+            pathInputs.push({ name: tc.function.name, index: tcIdx, input: pathInput });
           } else if (tc.function.name === "edit_file") {
             detailDiv.textContent = "Path: " + (args.path || "?") + "\nReplace: " + (args.old_string || "") + "\nWith: " + (args.new_string || "");
           } else {

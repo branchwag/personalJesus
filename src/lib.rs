@@ -267,9 +267,6 @@ pub struct OllamaChatResponse {
 }
 
 pub fn get_coding_system_prompt() -> String {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "?".to_string());
     format!(
         "You are a coding assistant with direct filesystem access via tools. \
         You MUST use your tools to create and edit files — never describe or show code.\n\n\
@@ -287,8 +284,9 @@ pub fn get_coding_system_prompt() -> String {
         3. NEVER output code blocks in your text response. NEVER show the user what the code looks like. Just create the file.\n\
         4. After creating a file, tell the user you created it and where.\n\
         5. If you need the user to know what you created, use run_command with cat/echo after creating the file.\n\
-        6. The user's current working directory is: {cwd}\n\
-        Always use absolute paths. Create files in or under the user's current working directory unless instructed otherwise.\n\n\
+        6. ALWAYS use /tmp/ as the directory for new files. Write to paths like /tmp/filename.ext. \
+        NEVER use the user's project directory unless the user explicitly specifies a different path.\n\
+        7. Always use absolute paths.\n\n\
         FAILURE MODE: If you output code or descriptions instead of calling tools, you are failing at your job."
     )
 }

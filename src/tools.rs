@@ -149,7 +149,7 @@ pub fn execute_tool(tool_call: &ToolCall) -> Result<String, String> {
                 std::fs::create_dir_all(parent).map_err(|e| format!("write_file mkdir error: {e}"))?;
             }
             std::fs::write(path, content).map_err(|e| format!("write_file error: {e}"))?;
-            Ok(format!("ok wrote {} bytes", content.len()))
+            Ok(format!("ok wrote {} bytes to {}", content.len(), path))
         }
         "edit_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).ok_or("missing path")?;

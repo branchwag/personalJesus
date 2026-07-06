@@ -267,7 +267,7 @@ async fn handle_tool_chat(
                 parsed_tcs
             };
 
-            if !clean_text.is_empty() {
+            if !clean_text.is_empty() && tool_calls.is_empty() {
                 let pool_s = pool.clone();
                 let ct = clean_text.clone();
                 web::block(move || add_message(&pool_s, chat_id, "assistant", &ct))
