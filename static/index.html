@@ -151,10 +151,60 @@
       }
 
       .chat-header {
-        text-align: center;
-        padding: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.75rem 1rem;
         border-bottom: 1px solid #222;
         font-size: 1.25rem;
+      }
+
+      .chat-header-left {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .mode-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+        color: #6b7280;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .mode-toggle input[type="checkbox"] {
+        appearance: none;
+        width: 2rem;
+        height: 1rem;
+        background-color: #374151;
+        border-radius: 0.5rem;
+        position: relative;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+
+      .mode-toggle input[type="checkbox"]::after {
+        content: "";
+        position: absolute;
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 50%;
+        background-color: #9ca3af;
+        top: 0.125rem;
+        left: 0.125rem;
+        transition: transform 0.2s, background-color 0.2s;
+      }
+
+      .mode-toggle input[type="checkbox"]:checked {
+        background-color: #2563eb;
+      }
+
+      .mode-toggle input[type="checkbox"]:checked::after {
+        transform: translateX(1rem);
+        background-color: #fff;
       }
 
       .chat-container {
@@ -240,6 +290,85 @@
         cursor: not-allowed;
       }
 
+      /* Tool call modal */
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.7);
+        z-index: 100;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .modal-overlay.visible {
+        display: flex;
+      }
+
+      .modal {
+        background-color: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 0.5rem;
+        padding: 1.5rem;
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      .modal h3 {
+        margin-bottom: 1rem;
+        color: #fbbf24;
+        font-size: 1.1rem;
+      }
+
+      .tool-call-item {
+        background-color: #111;
+        border: 1px solid #374151;
+        border-radius: 0.375rem;
+        padding: 0.75rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.85rem;
+      }
+
+      .tool-call-name {
+        color: #60a5fa;
+        font-weight: bold;
+        margin-bottom: 0.25rem;
+      }
+
+      .tool-call-detail {
+        color: #d1d5db;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .modal-buttons {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: flex-end;
+        margin-top: 1rem;
+      }
+
+      .btn-confirm {
+        background-color: #2563eb;
+      }
+
+      .btn-confirm:hover {
+        background-color: #3b82f6;
+      }
+
+      .btn-deny {
+        background-color: #dc2626;
+      }
+
+      .btn-deny:hover {
+        background-color: #ef4444;
+      }
+
       @media (max-width: 640px) {
         .sidebar {
           width: 200px;
@@ -247,6 +376,9 @@
         }
         .message {
           max-width: 90%;
+        }
+        .modal {
+          max-width: 95%;
         }
       }
     </style>
@@ -262,7 +394,15 @@
     <button id="toggleSidebar" class="toggle-sidebar" title="Collapse sidebar">◀</button>
 
     <main class="main-content">
-      <div class="chat-header">🎵 Personal Jesus 🎵</div>
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <span>🎵 Personal Jesus 🎵</span>
+        </div>
+        <label class="mode-toggle">
+          <input type="checkbox" id="codingModeToggle" />
+          <span>Coding mode</span>
+        </label>
+      </div>
       <div class="chat-container" id="chatContainer">
         <div class="empty-state" id="emptyState">Select a chat or create a new one</div>
       </div>
@@ -277,6 +417,18 @@
       </div>
     </main>
 
+    <!-- Tool confirmation modal -->
+    <div class="modal-overlay" id="toolModal">
+      <div class="modal">
+        <h3>🔧 AI wants to use tools</h3>
+        <div id="toolCallsList"></div>
+        <div class="modal-buttons">
+          <button class="btn-deny" id="denyBtn">Deny</button>
+          <button class="btn-confirm" id="confirmBtn">Confirm</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const chatList = document.getElementById("chatList");
       const chatContainer = document.getElementById("chatContainer");
@@ -284,10 +436,18 @@
       const messageInput = document.getElementById("messageInput");
       const sendButton = document.getElementById("sendButton");
       const newChatBtn = document.getElementById("newChatBtn");
+      const codingModeToggle = document.getElementById("codingModeToggle");
+      const toolModal = document.getElementById("toolModal");
+      const toolCallsList = document.getElementById("toolCallsList");
+      const confirmBtn = document.getElementById("confirmBtn");
+      const denyBtn = document.getElementById("denyBtn");
 
       let isLoading = false;
       let activeChatId = null;
       let chats = [];
+      let codingMode = false;
+      let pendingSessionId = null;
+      let pendingToolCalls = [];
 
       function formatTime(dateStr) {
         const d = new Date(dateStr + "Z");
@@ -363,6 +523,8 @@
 
       async function selectChat(id) {
         activeChatId = id;
+        pendingSessionId = null;
+        pendingToolCalls = [];
         renderChatList();
         chatContainer.innerHTML = "";
         messageInput.disabled = false;
@@ -390,6 +552,8 @@
           chats = chats.filter((c) => c.id !== id);
           if (activeChatId === id) {
             activeChatId = null;
+            pendingSessionId = null;
+            pendingToolCalls = [];
             chatContainer.innerHTML = "";
             showEmptyState();
           }
@@ -419,7 +583,108 @@
         }
       }
 
-      async function sendMessage() {
+      function showToolModal(toolCalls, sessionId) {
+        pendingToolCalls = toolCalls;
+        pendingSessionId = sessionId;
+        toolCallsList.innerHTML = "";
+
+        for (const tc of toolCalls) {
+          const div = document.createElement("div");
+          div.className = "tool-call-item";
+
+          const nameDiv = document.createElement("div");
+          nameDiv.className = "tool-call-name";
+          nameDiv.textContent = tc.function.name;
+
+          const detailDiv = document.createElement("div");
+          detailDiv.className = "tool-call-detail";
+          const args = tc.function.arguments || {};
+          let detail = "";
+          switch (tc.function.name) {
+            case "read_file":
+              detail = "Path: " + (args.path || "?");
+              break;
+            case "write_file":
+              detail = "Path: " + (args.path || "?") + "\nSize: " + (args.content ? args.content.length : 0) + " bytes";
+              break;
+            case "edit_file":
+              detail = "Path: " + (args.path || "?") + "\nReplace: " + (args.old_string || "") + "\nWith: " + (args.new_string || "");
+              break;
+            case "run_command":
+              detail = "Command: " + (args.command || "?");
+              break;
+            case "glob":
+              detail = "Pattern: " + (args.pattern || "?");
+              break;
+            case "grep":
+              detail = "Pattern: " + (args.pattern || "?") + "\nPath: " + (args.path || ".");
+              break;
+            case "read_directory":
+              detail = "Path: " + (args.path || "?");
+              break;
+            default:
+              detail = JSON.stringify(args, null, 2);
+          }
+          detailDiv.textContent = detail;
+
+          div.appendChild(nameDiv);
+          div.appendChild(detailDiv);
+          toolCallsList.appendChild(div);
+        }
+
+        toolModal.classList.add("visible");
+      }
+
+      async function sendCodingMessage() {
+        const message = messageInput.value.trim();
+        if (!message || isLoading) return;
+
+        if (!activeChatId) {
+          await createNewChat();
+        }
+
+        addMessage(message, "user");
+        messageInput.value = "";
+
+        isLoading = true;
+        sendButton.disabled = true;
+        addLoadingMessage();
+
+        try {
+          const response = await fetch("/api/chat/tools", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: activeChatId, message }),
+          });
+
+          const data = await response.json();
+          document.getElementById("loadingMessage")?.remove();
+
+          if (data.type === "text") {
+            activeChatId = data.chat_id;
+            if (!chats.find(c => c.id === data.chat_id)) {
+              await loadChats();
+            }
+            if (data.content) {
+              addMessage(data.content, "assistant");
+            }
+            const title = message.length > 50 ? message.substring(0, 50) + "..." : message;
+            updateChatTitle(activeChatId, title);
+          } else if (data.type === "tool_calls") {
+            showToolModal(data.tool_calls, data.session_id);
+          }
+        } catch (error) {
+          console.error("Error:", error);
+          document.getElementById("loadingMessage")?.remove();
+          addMessage("Sorry, there was an error processing your request.", "assistant");
+        } finally {
+          isLoading = false;
+          sendButton.disabled = false;
+          messageInput.focus();
+        }
+      }
+
+      async function sendNormalMessage() {
         const message = messageInput.value.trim();
         if (!message || isLoading) return;
 
@@ -475,10 +740,100 @@
         }
       }
 
+      async function sendMessage() {
+        if (codingMode) {
+          await sendCodingMessage();
+        } else {
+          await sendNormalMessage();
+        }
+      }
+
+      async function handleToolConfirm() {
+        if (!pendingSessionId) return;
+
+        toolModal.classList.remove("visible");
+        isLoading = true;
+        sendButton.disabled = true;
+        addLoadingMessage();
+
+        try {
+          const response = await fetch("/api/chat/tools/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: pendingSessionId, approved: true }),
+          });
+
+          const data = await response.json();
+          document.getElementById("loadingMessage")?.remove();
+          pendingSessionId = null;
+          pendingToolCalls = [];
+
+          if (data.type === "text") {
+            if (data.content) {
+              addMessage(data.content, "assistant");
+            }
+          } else if (data.type === "tool_calls") {
+            showToolModal(data.tool_calls, data.session_id);
+          }
+        } catch (error) {
+          console.error("Error:", error);
+          document.getElementById("loadingMessage")?.remove();
+          addMessage("Sorry, there was an error processing your request.", "assistant");
+        } finally {
+          isLoading = false;
+          sendButton.disabled = false;
+          messageInput.focus();
+        }
+      }
+
+      async function handleToolDeny() {
+        if (!pendingSessionId) return;
+
+        toolModal.classList.remove("visible");
+        isLoading = true;
+        sendButton.disabled = true;
+        addLoadingMessage();
+
+        try {
+          const response = await fetch("/api/chat/tools/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: pendingSessionId, approved: false }),
+          });
+
+          const data = await response.json();
+          document.getElementById("loadingMessage")?.remove();
+          pendingSessionId = null;
+          pendingToolCalls = [];
+
+          if (data.type === "text") {
+            if (data.content) {
+              addMessage(data.content, "assistant");
+            }
+          } else if (data.type === "tool_calls") {
+            showToolModal(data.tool_calls, data.session_id);
+          }
+        } catch (error) {
+          console.error("Error:", error);
+          document.getElementById("loadingMessage")?.remove();
+          addMessage("Sorry, there was an error processing your request.", "assistant");
+        } finally {
+          isLoading = false;
+          sendButton.disabled = false;
+          messageInput.focus();
+        }
+      }
+
       newChatBtn.addEventListener("click", createNewChat);
       sendButton.addEventListener("click", sendMessage);
       messageInput.addEventListener("keypress", (e) => {
         if (e.key === "Enter") sendMessage();
+      });
+      confirmBtn.addEventListener("click", handleToolConfirm);
+      denyBtn.addEventListener("click", handleToolDeny);
+
+      codingModeToggle.addEventListener("change", () => {
+        codingMode = codingModeToggle.checked;
       });
 
       document.getElementById("toggleSidebar").addEventListener("click", () => {

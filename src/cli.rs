@@ -1,6 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
+use personal_jesus::tools::{self, ToolCall};
 use personal_jesus::*;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -13,6 +14,12 @@ use tokio::sync::mpsc;
 enum Focus {
     Sidebar,
     Input,
+}
+
+enum CliEvent {
+    TextReady,
+    ToolCalls(Vec<ToolCall>, Vec<OllamaChatMessage>),
+    Error(String),
 }
 
 struct App {
@@ -28,8 +35,10 @@ struct App {
     pool: DbPool,
     ollama_url: String,
     model: String,
-    tx: mpsc::UnboundedSender<()>,
-    rx: mpsc::UnboundedReceiver<()>,
+    tx: mpsc::UnboundedSender<CliEvent>,
+    rx: mpsc::UnboundedReceiver<CliEvent>,
+    pending_tool_calls: Option<(Vec<ToolCall>, Vec<OllamaChatMessage>)>,
+    waiting_confirmation: bool,
 }
 
 impl App {
@@ -44,7 +53,7 @@ impl App {
             input: String::new(),
             loading: false,
             sidebar_index: 0,
-            focus: Focus::Sidebar,
+            focus: Focus::Input,
             scroll: 0,
             exit: false,
             pool,
@@ -52,6 +61,8 @@ impl App {
             model,
             tx,
             rx,
+            pending_tool_calls: None,
+            waiting_confirmation: false,
         };
         app.load_chats();
         app
@@ -123,15 +134,134 @@ impl App {
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            let response = query_ollama(&ollama_url, &model, &message)
-                .await
-                .unwrap_or_else(|e| format!("Error: {e}"));
-            tokio::task::spawn_blocking(move || {
-                let _ = add_message(&pool, chat_id2, "assistant", &response);
-            })
-            .await
-            .ok();
-            let _ = tx.send(());
+            Self::run_ollama_loop(ollama_url, model, chat_id2, pool, None, tx).await;
+        });
+    }
+
+    async fn run_ollama_loop(
+        ollama_url: String,
+        model: String,
+        chat_id: i64,
+        pool: DbPool,
+        extra_messages: Option<Vec<OllamaChatMessage>>,
+        tx: mpsc::UnboundedSender<CliEvent>,
+    ) {
+        let msgs = if let Some(extra) = extra_messages {
+            extra
+        } else {
+            match build_messages_from_db(&pool, chat_id) {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = tx.send(CliEvent::Error(e));
+                    return;
+                }
+            }
+        };
+
+        let tools = Some(tools::get_tool_definitions());
+        match chat_with_ollama(&ollama_url, &model, msgs.clone(), tools).await {
+            Ok(resp) => {
+                let native_tcs = resp.message.tool_calls.clone().unwrap_or_default();
+                let text = &resp.message.content;
+                let parsed_tcs = tools::parse_tool_calls_from_text(text);
+                let clean_text = tools::strip_tool_calls_from_text(text);
+
+                let tool_calls = if !native_tcs.is_empty() {
+                    native_tcs
+                } else if !parsed_tcs.is_empty() {
+                    parsed_tcs
+                } else {
+                    Vec::new()
+                };
+
+                if !clean_text.is_empty() {
+                    let pool2 = pool.clone();
+                    let ct = clean_text.clone();
+                    tokio::task::spawn_blocking(move || {
+                        add_message(&pool2, chat_id, "assistant", &ct).ok();
+                    })
+                    .await
+                    .ok();
+                }
+
+                if tool_calls.is_empty() {
+                    let _ = tx.send(CliEvent::TextReady);
+                } else {
+                    let mut context = msgs;
+                    context.push(OllamaChatMessage {
+                        role: "assistant".to_string(),
+                        content: clean_text.clone(),
+                        tool_calls: Some(tool_calls.clone()),
+                        name: None,
+                    });
+                    let _ = tx.send(CliEvent::ToolCalls(tool_calls, context));
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(CliEvent::Error(e));
+            }
+        }
+    }
+
+    fn confirm_tool(&mut self) {
+        let (tool_calls, messages) = match self.pending_tool_calls.take() {
+            Some(v) => v,
+            None => return,
+        };
+        self.waiting_confirmation = false;
+        self.loading = true;
+
+        let mut extra = messages;
+        for tc in &tool_calls {
+            let result = match tools::execute_tool(tc) {
+                Ok(res) => res,
+                Err(e) => format!("Error: {e}"),
+            };
+            extra.push(OllamaChatMessage {
+                role: "tool".to_string(),
+                content: result,
+                tool_calls: None,
+                name: Some(tc.function.name.clone()),
+            });
+        }
+
+        let pool = self.pool.clone();
+        let ollama_url = self.ollama_url.clone();
+        let model = self.model.clone();
+        let chat_id = self.active_chat_id.unwrap();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            Self::run_ollama_loop(ollama_url, model, chat_id, pool, Some(extra), tx).await;
+        });
+    }
+
+    fn deny_tool(&mut self) {
+        let (_tool_calls, messages) = match self.pending_tool_calls.take() {
+            Some(v) => v,
+            None => return,
+        };
+        self.waiting_confirmation = false;
+        self.loading = true;
+
+        let mut extra = messages;
+        extra.push(OllamaChatMessage {
+            role: "system".to_string(),
+            content: "The user declined to execute the tool calls. Do not repeat the same request. \
+                      Respond as best you can without the tool."
+                .to_string(),
+            tool_calls: None,
+            name: None,
+        });
+
+        let pool = self.pool.clone();
+        let ollama_url = self.ollama_url.clone();
+        let model = self.model.clone();
+        let chat_id = self.active_chat_id.unwrap();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            Self::run_ollama_loop(ollama_url, model, chat_id, pool, Some(extra), tx).await;
         });
     }
 }
@@ -150,11 +280,7 @@ fn restore_terminal() -> io::Result<()> {
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let constraints = if app.chats.is_empty() {
-        vec![Constraint::Min(1), Constraint::Length(1)]
-    } else {
-        vec![Constraint::Min(1), Constraint::Length(1)]
-    };
+    let constraints = vec![Constraint::Min(1), Constraint::Length(1)];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -224,13 +350,14 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
         None => " Select a chat or press n to create one ".to_string(),
     };
 
-    if app.messages.is_empty() && app.active_chat_id.is_some() && !app.loading {
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.messages.is_empty() && app.active_chat_id.is_some() && !app.loading && !app.waiting_confirmation {
         let empty = Paragraph::new("No messages yet. Type below to start chatting.")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(empty, chunks[0]);
     } else if app.active_chat_id.is_some() {
-        let mut lines: Vec<Line> = Vec::new();
         for msg in &app.messages {
             let label = match msg.role.as_str() {
                 "user" => "You",
@@ -249,12 +376,37 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(msg.content.as_str()));
             lines.push(Line::from(""));
         }
+
+        if app.waiting_confirmation {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "━━━ AI wants to use tools ━━━",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            if let Some((tool_calls, _)) = &app.pending_tool_calls {
+                for tc in tool_calls {
+                    for line in tools::tool_call_description(tc).lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {line}"),
+                            Style::default().fg(Color::Cyan),
+                        )));
+                    }
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " Execute? (y/N) ",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+
         if app.loading {
             lines.push(Line::from(Span::styled(
                 "[AI] Thinking...",
                 Style::default().fg(Color::Yellow),
             )));
         }
+
         let messages = Paragraph::new(Text::from(lines))
             .block(Block::default().title(title).borders(Borders::ALL))
             .wrap(Wrap { trim: false })
@@ -272,7 +424,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let input_text: &str = if app.input.is_empty() && matches!(app.focus, Focus::Sidebar) {
+    let input_text: &str = if app.input.is_empty() {
         " Type a message..."
     } else {
         app.input.as_str()
@@ -283,16 +435,8 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(input, chunks[1]);
 
     if matches!(app.focus, Focus::Input) {
-        let chars: Vec<char> = app.input.chars().collect();
-        let cursor_col = if chars.is_empty() {
-            1
-        } else {
-            chars.len() as u16 + 1
-        };
-        frame.set_cursor_position((
-            chunks[1].x + cursor_col,
-            chunks[1].y + 1,
-        ));
+        let cursor_col = app.input.chars().count() as u16 + 1;
+        frame.set_cursor_position((chunks[1].x + cursor_col, chunks[1].y + 1));
     }
 }
 
@@ -346,29 +490,23 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
     let top_bar = if app.loading {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(
-                " Personal Jesus ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(" Thinking... ", Style::default().fg(Color::Yellow)),
+        ]))
+    } else if app.waiting_confirmation {
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(" Awaiting confirmation ", Style::default().fg(Color::Green)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(
-                " Personal Jesus ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
-            Span::styled(
-                format!(" {} chats ", app.chats.len()),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!(" {} chats ", app.chats.len()), Style::default().fg(Color::DarkGray)),
         ]))
     };
     let top_area = Rect {
@@ -390,9 +528,24 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
     while !app.exit {
         terminal.draw(|f| ui(f, &mut app, show_help))?;
 
-        if let Ok(()) = app.rx.try_recv() {
-            app.loading = false;
-            app.load_messages();
+        if let Ok(event) = app.rx.try_recv() {
+            match event {
+                CliEvent::TextReady => {
+                    app.loading = false;
+                    app.load_messages();
+                }
+                CliEvent::ToolCalls(tcs, msgs) => {
+                    app.loading = false;
+                    app.load_messages();
+                    app.pending_tool_calls = Some((tcs, msgs));
+                    app.waiting_confirmation = true;
+                }
+                CliEvent::Error(e) => {
+                    app.loading = false;
+                    let _ = add_message(&app.pool, app.active_chat_id.unwrap_or(0), "assistant", &format!("Error: {e}"));
+                    app.load_messages();
+                }
+            }
         }
 
         if event::poll(std::time::Duration::from_millis(100))? {
@@ -423,6 +576,19 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     continue;
                 }
 
+                if app.waiting_confirmation {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            app.confirm_tool();
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.deny_tool();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match app.focus {
                     Focus::Sidebar => handle_sidebar_key(&mut app, key),
                     Focus::Input => handle_input_key(&mut app, key),
@@ -438,55 +604,35 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
 fn handle_sidebar_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            if app.sidebar_index > 0 {
-                app.sidebar_index -= 1;
-            }
+            if app.sidebar_index > 0 { app.sidebar_index -= 1; }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.sidebar_index + 1 < app.chats.len() {
-                app.sidebar_index += 1;
-            }
+            if app.sidebar_index + 1 < app.chats.len() { app.sidebar_index += 1; }
         }
-        KeyCode::Enter => {
-            app.select_chat(app.sidebar_index);
-        }
-        KeyCode::Char('n') => {
-            app.new_chat();
-        }
+        KeyCode::Enter => app.select_chat(app.sidebar_index),
+        KeyCode::Char('n') => app.new_chat(),
         KeyCode::Char('d') => {
-            if !app.chats.is_empty() {
-                if app.chats.len() > app.sidebar_index {
-                    let id = app.chats[app.sidebar_index].id;
-                    let _ = delete_chat(&app.pool, id);
-                    if app.active_chat_id == Some(id) {
-                        app.active_chat_id = None;
-                        app.messages = vec![];
-                    }
-                    app.load_chats();
+            if !app.chats.is_empty() && app.chats.len() > app.sidebar_index {
+                let id = app.chats[app.sidebar_index].id;
+                let _ = delete_chat(&app.pool, id);
+                if app.active_chat_id == Some(id) {
+                    app.active_chat_id = None;
+                    app.messages = vec![];
                 }
+                app.load_chats();
             }
         }
-        KeyCode::Tab => {
-            app.focus = Focus::Input;
-        }
+        KeyCode::Tab => app.focus = Focus::Input,
         _ => {}
     }
 }
 
 fn handle_input_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Enter => {
-            app.send_message();
-        }
-        KeyCode::Tab => {
-            app.focus = Focus::Sidebar;
-        }
-        KeyCode::Char(c) => {
-            app.input.push(c);
-        }
-        KeyCode::Backspace => {
-            app.input.pop();
-        }
+        KeyCode::Enter => app.send_message(),
+        KeyCode::Tab => app.focus = Focus::Sidebar,
+        KeyCode::Char(c) => app.input.push(c),
+        KeyCode::Backspace => { app.input.pop(); }
         _ => {}
     }
 }
@@ -497,27 +643,126 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
 
     let chat = match create_chat(pool) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            return;
-        }
+        Err(e) => { eprintln!("Error: {e}"); return; }
     };
 
     let _ = update_title_from_message(pool, chat.id, question);
     let _ = add_message(pool, chat.id, "user", question);
 
     println!("You: {question}");
-
     print!("AI: ");
     io::stdout().flush().ok();
 
-    match query_ollama(&ollama_url, &model, question).await {
-        Ok(response) => {
-            println!("{response}");
-            let _ = add_message(pool, chat.id, "assistant", &response);
-        }
-        Err(e) => {
-            eprintln!("\nError: {e}");
+    let current_msgs = match build_messages_from_db(pool, chat.id) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("\nError: {e}"); return; }
+    };
+
+    // Tool loop
+    let mut current_msgs = current_msgs;
+    let tools = Some(tools::get_tool_definitions());
+    loop {
+        match chat_with_ollama(&ollama_url, &model, current_msgs.clone(), tools.clone()).await {
+            Ok(resp) => {
+                let native_tcs = resp.message.tool_calls.clone().unwrap_or_default();
+                let text = &resp.message.content;
+                let parsed_tcs = tools::parse_tool_calls_from_text(text);
+                let clean_text = tools::strip_tool_calls_from_text(text);
+
+                let tool_calls = if !native_tcs.is_empty() {
+                    native_tcs
+                } else if !parsed_tcs.is_empty() {
+                    parsed_tcs
+                } else {
+                    Vec::new()
+                };
+
+                if !clean_text.is_empty() {
+                    println!("{clean_text}");
+                    let _ = add_message(pool, chat.id, "assistant", &clean_text);
+                }
+
+                if tool_calls.is_empty() {
+                    let blocks = tools::extract_code_blocks(&clean_text);
+                    if !blocks.is_empty() {
+                        println!("\nThe AI output code blocks instead of creating files.");
+                        for (i, block) in blocks.iter().enumerate() {
+                            println!("\n--- Code block {} ({}) ---", i + 1, block.language);
+                            for line in block.code.lines() {
+                                println!("  {line}");
+                            }
+                            print!("\nEnter filename to create (or 'n' to skip): ");
+                            io::stdout().flush().ok();
+                            let mut input = String::new();
+                            io::stdin().read_line(&mut input).ok();
+                            let input = input.trim().to_string();
+                            if !input.is_empty() && !input.eq_ignore_ascii_case("n") {
+                                let cwd = std::env::current_dir().ok();
+                                let path = if input.starts_with('/') {
+                                    input.clone()
+                                } else if let Some(ref dir) = cwd {
+                                    format!("{}/{}", dir.display(), input)
+                                } else {
+                                    input.clone()
+                                };
+                                if let Some(parent) = std::path::Path::new(&path).parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                match std::fs::write(&path, &block.code) {
+                                    Ok(_) => println!("  ✅ Created {path}"),
+                                    Err(e) => println!("  ❌ Error: {e}"),
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                // Save assistant message with tool_calls
+                current_msgs.push(OllamaChatMessage {
+                    role: "assistant".to_string(),
+                    content: clean_text.clone(),
+                    tool_calls: Some(tool_calls.clone()),
+                    name: None,
+                });
+
+                println!();
+                for tc in &tool_calls {
+                    println!("  ⚡ {}", tools::tool_call_description(tc));
+                }
+                print!("\nExecute? [y/N] ");
+                io::stdout().flush().ok();
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).ok();
+
+                if input.trim().eq_ignore_ascii_case("y") {
+                    for tc in &tool_calls {
+                        let result = match tools::execute_tool(tc) {
+                            Ok(r) => r,
+                            Err(e) => format!("Error: {e}"),
+                        };
+                        current_msgs.push(OllamaChatMessage {
+                            role: "tool".to_string(),
+                            content: result,
+                            tool_calls: None,
+                            name: Some(tc.function.name.clone()),
+                        });
+                    }
+                } else {
+                    for tc in &tool_calls {
+                        current_msgs.push(OllamaChatMessage {
+                            role: "tool".to_string(),
+                            content: "User declined to execute.".to_string(),
+                            tool_calls: None,
+                            name: Some(tc.function.name.clone()),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("\nError: {e}");
+                break;
+            }
         }
     }
 }

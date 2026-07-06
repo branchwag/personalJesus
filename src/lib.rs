@@ -3,7 +3,12 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
+use std::sync::{Arc, Mutex};
+
+pub mod tools;
+use tools::ToolCall;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -232,4 +237,117 @@ pub async fn query_ollama(
 
 pub fn get_env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+// ── Ollama Chat API types (for tool-enabled chat) ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaChatMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OllamaChatRequest {
+    pub model: String,
+    pub messages: Vec<OllamaChatMessage>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<tools::ToolDefinition>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OllamaChatResponse {
+    pub message: OllamaChatMessage,
+    pub done: bool,
+}
+
+pub fn get_coding_system_prompt() -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "?".to_string());
+    format!(
+        "You are a coding assistant with direct filesystem access via tools. \
+        You MUST use your tools to create and edit files — never describe or show code.\n\n\
+        AVAILABLE TOOLS:\n\
+        - write_file(path, content): Create a new file (IMMEDIATELY creates it)\n\
+        - edit_file(path, old_string, new_string): Edit an existing file\n\
+        - read_file(path): Read a file\n\
+        - run_command(command): Run a shell command\n\
+        - glob(pattern): Find files by pattern\n\
+        - grep(pattern, path): Search file contents\n\
+        - read_directory(path): List directory contents\n\n\
+        ABSOLUTE RULES (you MUST follow these):\n\
+        1. When asked to create a script, code, or file — call write_file NOW. Do not describe what you will write.\n\
+        2. When asked to modify code — call edit_file NOW. Do not show the changes, make them.\n\
+        3. NEVER output code blocks in your text response. NEVER show the user what the code looks like. Just create the file.\n\
+        4. After creating a file, tell the user you created it and where.\n\
+        5. If you need the user to know what you created, use run_command with cat/echo after creating the file.\n\
+        6. The user's current working directory is: {cwd}\n\
+        Always use absolute paths. Create files in or under the user's current working directory unless instructed otherwise.\n\n\
+        FAILURE MODE: If you output code or descriptions instead of calling tools, you are failing at your job."
+    )
+}
+
+pub fn build_messages_from_db(pool: &DbPool, chat_id: i64) -> Result<Vec<OllamaChatMessage>, String> {
+    let db_msgs = get_messages(pool, chat_id)?;
+    let mut messages = Vec::new();
+    messages.push(OllamaChatMessage {
+        role: "system".to_string(),
+        content: get_coding_system_prompt(),
+        tool_calls: None,
+        name: None,
+    });
+    for m in &db_msgs {
+        messages.push(OllamaChatMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            tool_calls: None,
+            name: None,
+        });
+    }
+    Ok(messages)
+}
+
+pub async fn chat_with_ollama(
+    ollama_url: &str,
+    model: &str,
+    messages: Vec<OllamaChatMessage>,
+    tools: Option<Vec<tools::ToolDefinition>>,
+) -> Result<OllamaChatResponse, String> {
+    let client = reqwest::Client::new();
+    let request = OllamaChatRequest {
+        model: model.to_string(),
+        messages,
+        stream: false,
+        tools,
+    };
+    let response = client
+        .post(format!("{}/api/chat", ollama_url))
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
+    let data: OllamaChatResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama response: {e}"))?;
+    Ok(data)
+}
+
+pub type SessionMap = Arc<Mutex<HashMap<String, SessionState>>>;
+
+pub struct SessionState {
+    pub messages: Vec<OllamaChatMessage>,
+    pub chat_id: i64,
+}
+
+pub fn generate_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    format!("s{:x}", nanos)
 }
