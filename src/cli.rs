@@ -45,7 +45,7 @@ impl App {
     fn new(pool: DbPool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-        let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
+        let model = get_env_or("MODEL_NAME", "gemma2:9b");
         let mut app = Self {
             chats: vec![],
             messages: vec![],
@@ -639,7 +639,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) {
 
 async fn run_one_shot(pool: &DbPool, question: &str) {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
+    let model = get_env_or("MODEL_NAME", "gemma2:9b");
 
     let chat = match create_chat(pool) {
         Ok(c) => c,

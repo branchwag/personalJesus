@@ -14,13 +14,13 @@ A fully offline, local-first Rust AI chat app. Everything runs on your machine â
 
 2. **Pull the model**:
    ```bash
-   ollama pull qwen2.5:7b
+   ollama pull gemma2:9b
    ```
 
 3. **Set environment variables**:
    ```bash
    export OLLAMA_URL=http://localhost:11434
-   export MODEL_NAME=qwen2.5:7b
+   export MODEL_NAME=gemma2:9b
    export PORT=8080
    ```
 

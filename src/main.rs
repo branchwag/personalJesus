@@ -60,7 +60,7 @@ async fn handle_chat(
     pool: web::Data<DbPool>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
+    let model = get_env_or("MODEL_NAME", "gemma2:9b");
     let message = req.message.clone();
     let chat_id = req.chat_id;
     let pool = pool.get_ref().clone();
@@ -214,7 +214,7 @@ async fn handle_tool_chat(
     sessions: web::Data<SessionMap>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
+    let model = get_env_or("MODEL_NAME", "gemma2:9b");
     let message = req.message.clone();
     let pool = pool.get_ref().clone();
 
@@ -321,7 +321,7 @@ async fn handle_tool_confirm(
     sessions: web::Data<SessionMap>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "qwen2.5:7b");
+    let model = get_env_or("MODEL_NAME", "gemma2:9b");
     let pool = pool.get_ref().clone();
 
     let state = {
