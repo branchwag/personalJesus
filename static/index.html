@@ -436,6 +436,7 @@
       const denyBtn = document.getElementById("denyBtn");
 
       let isLoading = false;
+      let loadingChatId = null;
       let activeChatId = null;
       let chats = [];
 
@@ -603,7 +604,10 @@
           for (const msg of messages) {
             addMessage(msg.content, msg.role);
           }
-          if (messages.length === 0) {
+          if (loadingChatId === id) {
+            addLoadingMessage();
+          }
+          if (messages.length === 0 && loadingChatId !== id) {
             showEmptyState();
           }
         } catch (e) {
@@ -725,6 +729,7 @@
         updateChatTitle(activeChatId, message.length > 50 ? message.substring(0, 50) + "..." : message);
 
         isLoading = true;
+        loadingChatId = activeChatId;
         sendButton.disabled = true;
         addLoadingMessage();
 
@@ -757,6 +762,7 @@
           addMessage("Sorry, there was an error processing your request.", "assistant");
         } finally {
           isLoading = false;
+          loadingChatId = null;
           sendButton.disabled = false;
           messageInput.focus();
         }
@@ -778,6 +784,7 @@
 
         toolModal.classList.remove("visible");
         isLoading = true;
+        loadingChatId = activeChatId;
         sendButton.disabled = true;
         addLoadingMessage();
 
@@ -813,6 +820,7 @@
           addMessage("Sorry, there was an error processing your request.", "assistant");
         } finally {
           isLoading = false;
+          loadingChatId = null;
           sendButton.disabled = false;
           messageInput.focus();
         }
@@ -823,6 +831,7 @@
 
         toolModal.classList.remove("visible");
         isLoading = true;
+        loadingChatId = activeChatId;
         sendButton.disabled = true;
         addLoadingMessage();
 
@@ -853,6 +862,7 @@
           addMessage("Sorry, there was an error processing your request.", "assistant");
         } finally {
           isLoading = false;
+          loadingChatId = null;
           sendButton.disabled = false;
           messageInput.focus();
         }
