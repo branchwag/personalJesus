@@ -722,6 +722,7 @@
 
         addMessage(message, "user");
         messageInput.value = "";
+        updateChatTitle(activeChatId, message.length > 50 ? message.substring(0, 50) + "..." : message);
 
         isLoading = true;
         sendButton.disabled = true;
@@ -747,8 +748,6 @@
             if (data.content) {
               addMessage(data.content, "assistant");
             }
-            const title = message.length > 50 ? message.substring(0, 50) + "..." : message;
-            updateChatTitle(activeChatId, title);
           } else if (data.type === "tool_calls") {
             showToolModal(data.tool_calls, data.session_id);
           }
