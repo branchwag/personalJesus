@@ -352,6 +352,19 @@
         cursor: default;
       }
 
+      .message pre {
+        background-color: #111;
+        border: 1px solid #333;
+        border-radius: 0.375rem;
+        padding: 0.75rem;
+        margin: 0.5rem 0;
+        overflow-x: auto;
+      }
+
+      .message code {
+        font-size: 0.9rem;
+      }
+
       @media (max-width: 640px) {
         .sidebar {
           width: 200px;
@@ -490,7 +503,31 @@
         removeEmptyState();
         const messageDiv = document.createElement("div");
         messageDiv.className = "message " + role;
-        messageDiv.textContent = content;
+
+        const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
+        let lastIndex = 0;
+        let match;
+        while ((match = codeBlockRe.exec(content)) !== null) {
+          if (match.index > lastIndex) {
+            messageDiv.appendChild(document.createTextNode(content.slice(lastIndex, match.index)));
+          }
+          const lang = match[1];
+          const code = match[2];
+          const pre = document.createElement("pre");
+          const codeEl = document.createElement("code");
+          if (lang) codeEl.className = "language-" + lang;
+          codeEl.textContent = code;
+          pre.appendChild(codeEl);
+          messageDiv.appendChild(pre);
+          lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < content.length) {
+          messageDiv.appendChild(document.createTextNode(content.slice(lastIndex)));
+        }
+        if (!messageDiv.hasChildNodes() && content) {
+          messageDiv.textContent = content;
+        }
+
         chatContainer.appendChild(messageDiv);
 
         if (role === "assistant") {

@@ -11,6 +11,32 @@ use ratatui::{Frame, Terminal};
 use std::io::{self, stdout, Write};
 use tokio::sync::mpsc;
 
+fn strip_code_blocks(text: &str) -> String {
+    let mut result = String::new();
+    let mut pos = 0;
+    while pos < text.len() {
+        let remaining = &text[pos..];
+        if let Some(start) = remaining.find("```") {
+            result.push_str(&text[pos..pos + start]);
+            let content_start = pos + start + 3;
+            let rest = &text[content_start..];
+            let line_end = rest.find('\n').unwrap_or(rest.len());
+            let code_start = content_start + line_end + 1;
+            if let Some(end) = text[code_start..].find("```") {
+                result.push_str(&text[code_start..code_start + end]);
+                pos = code_start + end + 3;
+            } else {
+                result.push_str(&text[pos..]);
+                break;
+            }
+        } else {
+            result.push_str(&text[pos..]);
+            break;
+        }
+    }
+    result
+}
+
 enum Focus {
     Sidebar,
     Input,
@@ -373,7 +399,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
                 format!("[{label}]"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(msg.content.as_str()));
+            lines.push(Line::from(strip_code_blocks(&msg.content)));
             lines.push(Line::from(""));
         }
 
@@ -678,7 +704,7 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
                 };
 
                 if !clean_text.is_empty() {
-                    println!("{clean_text}");
+                    println!("{}", strip_code_blocks(&clean_text));
                     let _ = add_message(pool, chat.id, "assistant", &clean_text);
                 }
 
