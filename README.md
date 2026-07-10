@@ -1,10 +1,10 @@
 # pj
 
-*Lift up the receiver, I'll make you a believer* 🎵
+🎵 *Lift up the receiver, I'll make you a believer* 🎵
 
 A fully offline, local-first Rust AI chat app. Everything runs on your machine — the model via Ollama, the web UI, and the CLI. No telemetry, no external API calls, no cloud dependencies. All static assets (fonts, etc.) are bundled locally.
 
-![Demo Screenshot](./personaljsesusdemo.png)
+![Demo Screenshot](./pjdemo.png)
 
 ## Quick Start
 
