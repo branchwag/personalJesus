@@ -1,7 +1,8 @@
 [package]
-name = "personal_jesus"
+name = "pj"
 version = "0.1.0"
 edition = "2021"
+default-run = "pj-web"
 
 [dependencies]
 actix-web = "4.9"
@@ -23,7 +24,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 [[bin]]
-name = "personal_jesus"
+name = "pj-web"
 path = "src/main.rs"
 
 [[bin]]

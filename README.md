@@ -1,4 +1,4 @@
-# Personal Jesus 🎵
+# pj
 
 *Lift up the receiver, I'll make you a believer* 🎵
 
@@ -47,7 +47,7 @@ A command-line interface is available for chatting from the terminal:
 To use `pj` from anywhere, add this alias to your `~/.bashrc` (make sure `DATABASE_URL` points to the project's database so the CLI and web app share the same data):
 
 ```bash
-alias pj='DATABASE_URL=/path/to/personalJesus/data/chat.db /path/to/personalJesus/target/release/pj'
+alias pj='DATABASE_URL=/path/to/pj/data/chat.db /path/to/pj/target/release/pj'
 ```
 
 The CLI shares the same SQLite database as the web app, so conversations are synced between both interfaces.

@@ -1,8 +1,8 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
-use personal_jesus::tools::{self, ToolCall};
-use personal_jesus::*;
+use pj::tools::{self, ToolCall};
+use pj::*;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
@@ -469,7 +469,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_help(frame: &mut Frame, area: Rect) {
     let help_lines = vec![
         Line::from(""),
-        Line::from(" Personal Jesus — Key Bindings").bold(),
+        Line::from(" pj — Key Bindings").bold(),
         Line::from(""),
         Line::from("  Tab          Switch focus (sidebar / input)"),
         Line::from("  Up / Down    Navigate chat list"),
@@ -516,21 +516,21 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
     let top_bar = if app.loading {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(" Thinking... ", Style::default().fg(Color::Yellow)),
         ]))
     } else if app.waiting_confirmation {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(" Awaiting confirmation ", Style::default().fg(Color::Green)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" Personal Jesus ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(format!(" {} chats ", app.chats.len()), Style::default().fg(Color::DarkGray)),
         ]))
