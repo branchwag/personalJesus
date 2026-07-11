@@ -656,7 +656,14 @@ fn handle_sidebar_key(app: &mut App, key: KeyEvent) {
 
 fn handle_input_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Enter => app.send_message(),
+        KeyCode::Enter => {
+            if app.input.trim() == "/exit" {
+                app.input.clear();
+                app.exit = true;
+            } else {
+                app.send_message();
+            }
+        }
         KeyCode::Tab => app.focus = Focus::Sidebar,
         KeyCode::Char(c) => app.input.push(c),
         KeyCode::Backspace => { app.input.pop(); }
