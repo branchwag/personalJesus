@@ -37,6 +37,7 @@ fn strip_code_blocks(text: &str) -> String {
     result
 }
 
+#[derive(PartialEq)]
 enum Focus {
     Sidebar,
     Input,
@@ -592,7 +593,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
                         app.exit = true;
                     }
-                    KeyCode::Char('?') => {
+                    KeyCode::Char('?') if app.focus == Focus::Sidebar => {
                         show_help = !show_help;
                     }
                     _ => {}
