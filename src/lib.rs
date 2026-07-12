@@ -241,9 +241,18 @@ pub fn get_env_or(key: &str, default: &str) -> String {
 
 // ── Ollama Chat API types (for tool-enabled chat) ──
 
+fn deserialize_string_or_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaChatMessage {
     pub role: String,
+    #[serde(deserialize_with = "deserialize_string_or_empty")]
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -321,23 +330,56 @@ pub async fn chat_with_ollama(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("Failed to build reqwest client: {e}"))?;
-    let request = OllamaChatRequest {
-        model: model.to_string(),
-        messages,
-        stream: false,
-        tools,
+
+    let url = format!("{}/api/chat", ollama_url);
+
+    let do_request = |tools: Option<Vec<tools::ToolDefinition>>| {
+        let client = &client;
+        let url = &url;
+        let model = model.to_string();
+        let messages = messages.clone();
+        async move {
+            let request = OllamaChatRequest {
+                model,
+                messages,
+                stream: false,
+                tools,
+            };
+            let response = client
+                .post(url)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
+
+            let status = response.status();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read Ollama response body: {e}"))?;
+
+            let text = String::from_utf8_lossy(&bytes).to_string();
+
+            if !status.is_success() {
+                return Err(format!("Ollama returned error {status}: {text}"));
+            }
+
+            let data: OllamaChatResponse = serde_json::from_str(&text).map_err(|e| {
+                let preview: String = text.chars().take(500).collect();
+                format!("Failed to parse Ollama response ({e}): {preview}")
+            })?;
+            Ok(data)
+        }
     };
-    let response = client
-        .post(format!("{}/api/chat", ollama_url))
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
-    let data: OllamaChatResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Ollama response: {e}"))?;
-    Ok(data)
+
+    match do_request(tools.clone()).await {
+        Ok(resp) => Ok(resp),
+        Err(e) if tools.is_some() && (e.contains("does not support tools") || e.contains("not supported")) => {
+            log::warn!("Model does not support tools, retrying without: {e}");
+            do_request(None).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub type SessionMap = Arc<Mutex<HashMap<String, SessionState>>>;
