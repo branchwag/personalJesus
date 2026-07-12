@@ -618,7 +618,11 @@
 
       async function deleteChat(id) {
         try {
-          await fetch("/api/chats/" + id, { method: "DELETE" });
+          const res = await fetch("/api/chats/" + id, { method: "DELETE" });
+          if (!res.ok) {
+            console.error("Failed to delete chat:", res.status, await res.text());
+            return;
+          }
           chats = chats.filter((c) => c.id !== id);
           if (activeChatId === id) {
             activeChatId = null;

@@ -66,6 +66,7 @@ struct App {
     rx: mpsc::UnboundedReceiver<CliEvent>,
     pending_tool_calls: Option<(Vec<ToolCall>, Vec<OllamaChatMessage>)>,
     waiting_confirmation: bool,
+    event_client: Option<EventClient>,
 }
 
 impl App {
@@ -90,6 +91,7 @@ impl App {
             rx,
             pending_tool_calls: None,
             waiting_confirmation: false,
+            event_client: EventClient::connect(&socket_path()),
         };
         app.load_chats();
         app
@@ -573,6 +575,41 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     app.load_messages();
                 }
             }
+        }
+
+        let mut socket_events = Vec::new();
+        let sp = socket_path();
+        if let Some(client) = app.event_client.as_mut() {
+            if socket_inode(&sp) != Some(client.ino) {
+                app.event_client = None;
+            } else {
+                loop {
+                    match client.try_recv() {
+                        Some(Some(change)) => socket_events.push(change),
+                        Some(None) => break,
+                        None => {
+                            app.event_client = None;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if app.event_client.is_none() {
+            app.event_client = EventClient::connect(&sp);
+            if app.event_client.is_some() {
+                app.load_chats();
+            }
+        }
+        if !socket_events.is_empty() {
+            for ev in &socket_events {
+                let ChatChange::Deleted { id } = ev;
+                if app.active_chat_id == Some(*id) {
+                    app.active_chat_id = None;
+                    app.messages = vec![];
+                }
+            }
+            app.load_chats();
         }
 
         if event::poll(std::time::Duration::from_millis(100))? {

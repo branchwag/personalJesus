@@ -8,6 +8,7 @@ use pj::*;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::sync::broadcast;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -35,13 +36,18 @@ async fn handle_create_chat(pool: web::Data<DbPool>) -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(chat))
 }
 
-async fn handle_delete_chat(path: web::Path<i64>, pool: web::Data<DbPool>) -> Result<HttpResponse> {
+async fn handle_delete_chat(
+    path: web::Path<i64>,
+    pool: web::Data<DbPool>,
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
+) -> Result<HttpResponse> {
     let id = path.into_inner();
     let pool = pool.get_ref().clone();
     web::block(move || delete_chat(&pool, id))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Deleted { id });
     Ok(HttpResponse::Ok().json(serde_json::json!({"ok": true})))
 }
 
@@ -489,10 +495,14 @@ async fn main() -> std::io::Result<()> {
     let pool = create_pool(&database_url);
     init_db(&pool);
 
+    let event_tx = start_event_server();
+    info!("Event socket at {}", socket_path().display());
+
     info!("Starting server on http://0.0.0.0:{}", port);
 
     let pool_data = web::Data::new(pool);
     let sessions = web::Data::new(session_store());
+    let event_tx_data = web::Data::new(event_tx);
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -504,6 +514,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(pool_data.clone())
             .app_data(sessions.clone())
+            .app_data(event_tx_data.clone())
             .wrap(cors)
             .route("/api/chat", web::post().to(handle_chat))
             .route("/api/chat/tools", web::post().to(handle_tool_chat))

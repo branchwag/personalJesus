@@ -5,12 +5,125 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::io::Read;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
 pub mod tools;
 use tools::ToolCall;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ChatChange {
+    Deleted { id: i64 },
+}
+
+pub fn socket_path() -> PathBuf {
+    let db_url = get_env_or("DATABASE_URL", "data/chat.db");
+    let mut p = PathBuf::from(&db_url);
+    p.pop();
+    p.push("events.sock");
+    p
+}
+
+pub fn start_event_server() -> broadcast::Sender<ChatChange> {
+    let (tx, _) = broadcast::channel::<ChatChange>(64);
+    let tx2 = tx.clone();
+    let path = socket_path();
+
+    tokio::spawn(async move {
+        let _ = std::fs::remove_file(&path);
+        let listener = match tokio::net::UnixListener::bind(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("event socket bind failed: {e}");
+                return;
+            }
+        };
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let mut rx = tx2.subscribe();
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let (_reader, mut writer) = tokio::io::split(stream);
+                loop {
+                    match rx.recv().await {
+                        Ok(change) => {
+                            let mut msg =
+                                serde_json::to_string(&change).unwrap_or_default();
+                            msg.push('\n');
+                            if writer.write_all(msg.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+    });
+
+    tx
+}
+
+pub fn socket_inode(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path).ok().map(|m| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            m.ino()
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
+    })
+}
+
+pub struct EventClient {
+    stream: UnixStream,
+    buf: Vec<u8>,
+    pub ino: u64,
+}
+
+impl EventClient {
+    pub fn connect(path: &std::path::Path) -> Option<Self> {
+        let ino = socket_inode(path)?;
+        UnixStream::connect(path).ok().map(|s| {
+            s.set_nonblocking(true).ok();
+            Self {
+                stream: s,
+                buf: Vec::with_capacity(1024),
+                ino,
+            }
+        })
+    }
+
+    pub fn try_recv(&mut self) -> Option<Option<ChatChange>> {
+        let mut tmp = [0u8; 1024];
+        loop {
+            match self.stream.read(&mut tmp) {
+                Ok(0) => return None,
+                Ok(n) => {
+                    self.buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = self.buf.drain(..=pos).collect();
+                        return Some(serde_json::from_slice(&line[..line.len() - 1]).ok());
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return Some(None),
+                Err(_) => return None,
+            }
+        }
+    }
+}
 
 #[derive(Deserialize)]
 pub struct ChatRequest {
@@ -287,9 +400,14 @@ pub fn get_coding_system_prompt() -> String {
         - glob(pattern): Find files by pattern\n\
         - grep(pattern, path): Search file contents\n\
         - read_directory(path): List directory contents\n\n\
+        HOW TO USE TOOLS:\n\
+        To call a tool, output a <tool_call> tag in your response like this:\n\
+        <tool_call>\n\
+        {{\"function\": {{\"name\": \"write_file\", \"arguments\": {{\"path\": \"/tmp/example.py\", \"content\": \"print('hello')\"}}}}}}\n\
+        </tool_call>\n\n\
         ABSOLUTE RULES (you MUST follow these):\n\
-        1. When asked to create a script, code, or file — call write_file NOW. Do not describe what you will write.\n\
-        2. When asked to modify code — call edit_file NOW. Do not show the changes, make them.\n\
+        1. When asked to create a script, code, or file — call write_file NOW via <tool_call>. Do not describe what you will write.\n\
+        2. When asked to modify code — call edit_file NOW via <tool_call>. Do not show the changes, make them.\n\
         3. NEVER output code blocks in your text response. NEVER show the user what the code looks like. Just create the file.\n\
         4. After creating a file, tell the user you created it and where.\n\
         5. If you need the user to know what you created, use run_command with cat/echo after creating the file.\n\
