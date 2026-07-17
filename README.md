@@ -67,6 +67,7 @@ Chat content is stored in SQLite as UTF-8. If Chinese text looks wrong, the fail
 - CLI/TUI: your terminal emulator must use a font with CJK glyph coverage and a UTF-8 locale such as `en_US.UTF-8`.
 - The default interactive startup now falls back to `--plain` automatically when no CJK-capable monospace font is detected through fontconfig.
 - Use `pj --tui` or `PJ_FORCE_TUI=1` if you want to force the fullscreen Ratatui UI anyway.
+- If the CLI still shows boxes for Chinese text, install a CJK font for your terminal environment and fully restart the terminal emulator so it reloads font fallback data. On this machine, installing `Noto Sans CJK SC` into `~/.local/share/fonts` and restarting `kitty` was required.
 
 You can verify the stored content directly with:
 
