@@ -75,8 +75,8 @@ async fn handle_chat(
     pool: web::Data<DbPool>,
     event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+    let ollama_url = ollama_url();
+    let model = model_name();
     let message = req.message.clone();
     let chat_id = req.chat_id;
     let pool = pool.get_ref().clone();
@@ -242,8 +242,8 @@ async fn handle_tool_chat(
     sessions: web::Data<SessionMap>,
     event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+    let ollama_url = ollama_url();
+    let model = model_name();
     let message = req.message.clone();
     let pool = pool.get_ref().clone();
 
@@ -295,11 +295,11 @@ async fn handle_tool_chat(
             let parsed_tcs = tools::parse_tool_calls_from_text(text);
             let clean_text = tools::strip_tool_calls_from_text(text);
 
-            let tool_calls = if !native_tcs.is_empty() {
+            let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
                 native_tcs
             } else {
                 parsed_tcs
-            };
+            }));
 
             if !clean_text.is_empty() && tool_calls.is_empty() {
                 let pool_s = pool.clone();
@@ -368,8 +368,8 @@ async fn handle_tool_confirm(
     sessions: web::Data<SessionMap>,
     event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+    let ollama_url = ollama_url();
+    let model = model_name();
     let pool = pool.get_ref().clone();
 
     let state = {
@@ -454,11 +454,11 @@ async fn handle_tool_confirm(
             let parsed_tcs = tools::parse_tool_calls_from_text(text);
             let clean_text = tools::strip_tool_calls_from_text(text);
 
-            let tool_calls = if !native_tcs.is_empty() {
+            let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
                 native_tcs
             } else {
                 parsed_tcs
-            };
+            }));
 
             if !clean_text.is_empty() {
                 let pool_s = pool.clone();

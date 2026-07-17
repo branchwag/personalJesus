@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
@@ -24,6 +25,73 @@ pub struct ToolCall {
 pub struct ToolCallFunction {
     pub name: String,
     pub arguments: serde_json::Value,
+}
+
+fn default_tmp_tool_path(name_hint: &str) -> String {
+    let cleaned = name_hint
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = cleaned.trim_matches('_');
+    let basename = if trimmed.is_empty() { "tool_output.txt" } else { trimmed };
+    format!("/tmp/{basename}")
+}
+
+fn normalize_write_path(path: Option<&str>) -> String {
+    match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(raw) if Path::new(raw).is_absolute() => raw.to_string(),
+        Some(raw) => {
+            let candidate = PathBuf::from(raw);
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(default_tmp_tool_path)
+                .unwrap_or_else(|| default_tmp_tool_path(raw))
+        }
+        None => default_tmp_tool_path("tool_output.txt"),
+    }
+}
+
+pub fn normalize_tool_call(tool_call: &ToolCall) -> ToolCall {
+    let mut normalized = tool_call.clone();
+    let name = normalized.function.name.as_str();
+    if !matches!(name, "write_file" | "edit_file" | "read_file" | "read_directory") {
+        return normalized;
+    }
+
+    if let Some(args) = normalized.function.arguments.as_object_mut() {
+        let current_path = args.get("path").and_then(|v| v.as_str());
+        let normalized_path = if name == "write_file" {
+            Some(normalize_write_path(current_path))
+        } else {
+            current_path.and_then(|path| {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    None
+                } else if Path::new(trimmed).is_absolute() {
+                    Some(trimmed.to_string())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(path) = normalized_path {
+            args.insert("path".to_string(), serde_json::Value::String(path));
+        }
+    }
+
+    normalized
+}
+
+pub fn normalize_tool_calls(tool_calls: &[ToolCall]) -> Vec<ToolCall> {
+    tool_calls.iter().map(normalize_tool_call).collect()
 }
 
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {

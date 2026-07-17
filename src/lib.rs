@@ -39,6 +39,14 @@ pub fn database_url() -> String {
     env::var("DATABASE_URL").unwrap_or_else(|_| default_database_url())
 }
 
+pub fn model_name() -> String {
+    get_env_or("MODEL_NAME", "gemma2:9b")
+}
+
+pub fn ollama_url() -> String {
+    get_env_or("OLLAMA_URL", "http://localhost:11434")
+}
+
 pub fn socket_path() -> PathBuf {
     let db_url = database_url();
     let mut p = PathBuf::from(&db_url);
@@ -460,6 +468,119 @@ fn extract_tool_calls_from_response(message: &OllamaChatMessage) -> Vec<ToolCall
     }
 }
 
+fn latest_user_message(messages: &[OllamaChatMessage]) -> Option<&str> {
+    messages
+        .iter()
+        .rev()
+        .find(|msg| msg.role == "user")
+        .map(|msg| msg.content.as_str())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolChatIntent {
+    General,
+    CreateFile,
+    EditFile,
+}
+
+fn contains_any(content: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|phrase| content.contains(phrase))
+}
+
+fn suggested_write_path_for_request(content: &str) -> &'static str {
+    let lower = content.to_lowercase();
+    if lower.contains("python") {
+        "/tmp/script.py"
+    } else if lower.contains("javascript") || lower.contains("node") {
+        "/tmp/script.js"
+    } else if lower.contains("typescript") {
+        "/tmp/script.ts"
+    } else if lower.contains("rust") {
+        "/tmp/main.rs"
+    } else if lower.contains("bash") || lower.contains("shell") || lower.contains("sh script") {
+        "/tmp/script.sh"
+    } else {
+        "/tmp/tool_output.txt"
+    }
+}
+
+fn classify_tool_chat_intent(content: &str) -> ToolChatIntent {
+    let lower = content.to_lowercase();
+    let edit_request = contains_any(&lower, &[
+        "edit this file",
+        "modify this file",
+        "update this file",
+        "edit the file",
+        "modify the file",
+        "update the file",
+        "change this file",
+        "change the file",
+        "patch this file",
+        "patch the file",
+        "rewrite this file",
+        "rewrite the file",
+    ]);
+    if edit_request {
+        return ToolChatIntent::EditFile;
+    }
+
+    let has_create_verb = contains_any(
+        &lower,
+        &[
+            "create",
+            "make",
+            "write",
+            "save",
+            "generate",
+            "build",
+        ],
+    );
+    let mentions_file_target = contains_any(
+        &lower,
+        &[
+            " file",
+            " script",
+            ".py",
+            ".js",
+            ".ts",
+            ".rs",
+            ".sh",
+            " python script",
+            " javascript script",
+            " bash script",
+            " shell script",
+        ],
+    );
+    let direct_create_request = contains_any(
+        &lower,
+        &[
+            "write code",
+            "create code",
+            "write me a",
+            "make me a",
+            "create me a",
+        ],
+    );
+    let create_request = (has_create_verb && mentions_file_target) || direct_create_request;
+    if create_request {
+        ToolChatIntent::CreateFile
+    } else {
+        ToolChatIntent::General
+    }
+}
+
+fn tool_calls_satisfy_intent(intent: ToolChatIntent, tool_calls: &[ToolCall]) -> bool {
+    match intent {
+        ToolChatIntent::General => true,
+        ToolChatIntent::CreateFile => tool_calls
+            .iter()
+            .any(|tool_call| tool_call.function.name == "write_file"),
+        ToolChatIntent::EditFile => tool_calls
+            .iter()
+            .any(|tool_call| tool_call.function.name == "edit_file"),
+    }
+}
+
 fn response_claims_file_change_without_tool_call(content: &str) -> bool {
     let lower = content.to_lowercase();
     let mentions_tmp = lower.contains("/tmp/");
@@ -481,32 +602,66 @@ fn response_claims_file_change_without_tool_call(content: &str) -> bool {
     (mentions_tmp && claims_file_write) || mentions_code_block
 }
 
+fn should_force_tool_retry(
+    requested_tools: bool,
+    intent: ToolChatIntent,
+    tool_calls: &[ToolCall],
+    clean_text: &str,
+) -> bool {
+    if !requested_tools {
+        return false;
+    }
+
+    if !tool_calls_satisfy_intent(intent, tool_calls) && intent != ToolChatIntent::General
+    {
+        return true;
+    }
+
+    if !tool_calls.is_empty() {
+        return false;
+    }
+
+    if response_claims_file_change_without_tool_call(clean_text) {
+        return true;
+    }
+
+    clean_text.contains("```") && intent != ToolChatIntent::General
+}
+
+fn correction_message_for_intent(intent: ToolChatIntent, latest_user_message: Option<&str>) -> String {
+    match intent {
+        ToolChatIntent::CreateFile => {
+            let path = latest_user_message
+                .map(suggested_write_path_for_request)
+                .unwrap_or("/tmp/tool_output.txt");
+            format!(
+                "Your previous reply should have been a tool call. Retry now.\n\
+                Return only a single <tool_call> block in this exact shape:\n\
+                <tool_call>\n\
+                {{\"function\": {{\"name\": \"write_file\", \"arguments\": {{\"path\": \"{path}\", \"content\": \"...\"}}}}}}\n\
+                </tool_call>\n\
+                Do not ask the user to continue after the tool call. Do not reply with plain text before the tool call."
+            )
+        }
+        ToolChatIntent::EditFile => "Your previous reply should have been a tool call. Retry now.\n\
+                Return only a single <tool_call> block in this exact shape:\n\
+                <tool_call>\n\
+                {\"function\": {\"name\": \"edit_file\", \"arguments\": {\"path\": \"/absolute/path\", \"old_string\": \"...\", \"new_string\": \"...\"}}}\n\
+                </tool_call>\n\
+                Do not reply with plain text before the tool call."
+            .to_string(),
+        ToolChatIntent::General => "Your previous reply should have been a tool call. Retry now and emit the appropriate tool call instead of plain text."
+            .to_string(),
+    }
+}
+
 pub fn get_coding_system_prompt() -> String {
-    "You are a coding assistant with direct filesystem access via tools. \
-        You MUST use your tools to create and edit files — never describe or show code.\n\n\
-        AVAILABLE TOOLS:\n\
-        - write_file(path, content): Create a new file (IMMEDIATELY creates it)\n\
-        - edit_file(path, old_string, new_string): Edit an existing file\n\
-        - read_file(path): Read a file\n\
-        - run_command(command): Run a shell command\n\
-        - glob(pattern): Find files by pattern\n\
-        - grep(pattern, path): Search file contents\n\
-        - read_directory(path): List directory contents\n\n\
-        HOW TO USE TOOLS:\n\
-        To call a tool, output a <tool_call> tag in your response like this:\n\
-        <tool_call>\n\
-        {{\"function\": {{\"name\": \"write_file\", \"arguments\": {{\"path\": \"/tmp/example.py\", \"content\": \"print('hello')\"}}}}}}\n\
-        </tool_call>\n\n\
-        ABSOLUTE RULES (you MUST follow these):\n\
-        1. When asked to create a script, code, or file — call write_file NOW via <tool_call>. Do not describe what you will write.\n\
-        2. When asked to modify code — call edit_file NOW via <tool_call>. Do not show the changes, make them.\n\
-        3. NEVER output code blocks in your text response. NEVER show the user what the code looks like. Just create the file.\n\
-        4. After creating a file, tell the user you created it and where.\n\
-        5. If you need the user to know what you created, use run_command with cat/echo after creating the file.\n\
-        6. ALWAYS use /tmp/ as the directory for new files. Write to paths like /tmp/filename.ext. \
-        NEVER use the user's project directory unless the user explicitly specifies a different path.\n\
-        7. Always use absolute paths.\n\n\
-        FAILURE MODE: If you output code or descriptions instead of calling tools, you are failing at your job."
+    "You are a coding assistant with filesystem tools.\n\
+    Use tools when you need to inspect files, create files, edit files, or run commands.\n\
+    If the user asks for a script, source file, or file edit, do not answer with prose first. Emit the tool call immediately.\n\
+    When using the text fallback, emit a single <tool_call>...</tool_call> block with valid JSON for the tool call.\n\
+    After tool results are returned, continue the task using those results.\n\
+    Do not tell the user to continue after a tool call; emit the tool call yourself."
         .to_string()
 }
 
@@ -542,7 +697,11 @@ pub async fn chat_with_ollama(
     let requested_tools = tools.clone();
     let mut active_tools = tools;
     let mut working_messages = messages;
-    let mut corrected_tool_retry = false;
+    let latest_user_message = latest_user_message(&working_messages).map(str::to_string);
+    let intent = latest_user_message.as_deref()
+        .map(classify_tool_chat_intent)
+        .unwrap_or(ToolChatIntent::General);
+    let mut corrected_tool_retries = 0u8;
 
     loop {
         let request = OllamaChatRequest {
@@ -580,21 +739,23 @@ pub async fn chat_with_ollama(
             let preview: String = text.chars().take(500).collect();
             format!("Failed to parse Ollama response ({e}): {preview}")
         })?;
-        let tool_calls = extract_tool_calls_from_response(&resp.message);
+        let tool_calls = tools::normalize_tool_calls(&extract_tool_calls_from_response(&resp.message));
         let clean_text = tools::strip_tool_calls_from_text(&resp.message.content);
 
-        if requested_tools.is_some()
-            && tool_calls.is_empty()
-            && response_claims_file_change_without_tool_call(&clean_text)
-        {
-            if corrected_tool_retry {
+        if should_force_tool_retry(
+            requested_tools.is_some(),
+            intent,
+            &tool_calls,
+            &clean_text,
+        ) {
+            if corrected_tool_retries >= 2 {
                 return Err(
-                    "Model claimed to create or modify a file without issuing a tool call."
+                    "Model failed to issue the required tool call for the requested file operation."
                         .to_string(),
                 );
             }
 
-            corrected_tool_retry = true;
+            corrected_tool_retries += 1;
             working_messages.push(OllamaChatMessage {
                 role: "assistant".to_string(),
                 content: clean_text,
@@ -603,7 +764,7 @@ pub async fn chat_with_ollama(
             });
             working_messages.push(OllamaChatMessage {
                 role: "system".to_string(),
-                content: "Your previous reply claimed that a file was created or showed code, but no tool call was emitted and no filesystem change happened. Retry now. If you intend to create or edit a file, respond with a <tool_call> for write_file or edit_file and do not claim success in plain text first.".to_string(),
+                content: correction_message_for_intent(intent, latest_user_message.as_deref()),
                 tool_calls: None,
                 name: None,
             });

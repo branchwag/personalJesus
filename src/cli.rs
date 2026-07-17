@@ -93,8 +93,8 @@ struct App {
 impl App {
     fn new(pool: DbPool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-        let model = get_env_or("MODEL_NAME", "gemma2:9b");
+        let ollama_url = ollama_url();
+        let model = model_name();
         let mut app = Self {
             chats: vec![],
             messages: vec![],
@@ -250,13 +250,13 @@ impl App {
                 let parsed_tcs = tools::parse_tool_calls_from_text(text);
                 let clean_text = tools::strip_tool_calls_from_text(text);
 
-                let tool_calls = if !native_tcs.is_empty() {
+                let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
                     native_tcs
                 } else if !parsed_tcs.is_empty() {
                     parsed_tcs
                 } else {
                     Vec::new()
-                };
+                }));
 
                 if !clean_text.is_empty() {
                     let pool2 = pool.clone();
@@ -869,8 +869,8 @@ fn handle_input_key(app: &mut App, key: KeyEvent) {
 }
 
 async fn run_one_shot(pool: &DbPool, question: &str) {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+    let ollama_url = ollama_url();
+    let model = model_name();
 
     let chat = match create_chat(pool) {
         Ok(c) => c,
@@ -907,13 +907,13 @@ async fn run_cli_turn(pool: &DbPool, chat_id: i64, ollama_url: &str, model: &str
                 let parsed_tcs = tools::parse_tool_calls_from_text(text);
                 let clean_text = tools::strip_tool_calls_from_text(text);
 
-                let tool_calls = if !native_tcs.is_empty() {
+                let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
                     native_tcs
                 } else if !parsed_tcs.is_empty() {
                     parsed_tcs
                 } else {
                     Vec::new()
-                };
+                }));
 
                 if !clean_text.is_empty() {
                     println!("{}", strip_code_blocks(&clean_text));
@@ -1006,8 +1006,8 @@ async fn run_cli_turn(pool: &DbPool, chat_id: i64, ollama_url: &str, model: &str
 }
 
 async fn run_plain_loop(pool: &DbPool) {
-    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
-    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+    let ollama_url = ollama_url();
+    let model = model_name();
 
     let chat = match create_chat(pool) {
         Ok(c) => c,
