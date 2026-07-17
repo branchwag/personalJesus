@@ -1,6 +1,8 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use pj::tools::{self, ToolCall};
 use pj::*;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -8,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use std::io::{self, stdout, Write};
+use std::io::{self, Write, stdout};
 use tokio::sync::mpsc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -59,13 +61,18 @@ enum Focus {
 }
 
 enum CliEvent {
-    TextReady { chat_id: i64 },
+    TextReady {
+        chat_id: i64,
+    },
     ToolCalls {
         chat_id: i64,
         tool_calls: Vec<ToolCall>,
         messages: Vec<OllamaChatMessage>,
     },
-    Error { chat_id: i64, message: String },
+    Error {
+        chat_id: i64,
+        message: String,
+    },
 }
 
 struct App {
@@ -250,13 +257,15 @@ impl App {
                 let parsed_tcs = tools::parse_tool_calls_from_text(text);
                 let clean_text = tools::strip_tool_calls_from_text(text);
 
-                let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
-                    native_tcs
-                } else if !parsed_tcs.is_empty() {
-                    parsed_tcs
-                } else {
-                    Vec::new()
-                }));
+                let tool_calls = tools::normalize_tool_calls(
+                    &(if !native_tcs.is_empty() {
+                        native_tcs
+                    } else if !parsed_tcs.is_empty() {
+                        parsed_tcs
+                    } else {
+                        Vec::new()
+                    }),
+                );
 
                 if !clean_text.is_empty() {
                     let pool2 = pool.clone();
@@ -348,9 +357,10 @@ impl App {
         let mut extra = messages;
         extra.push(OllamaChatMessage {
             role: "system".to_string(),
-            content: "The user declined to execute the tool calls. Do not repeat the same request. \
+            content:
+                "The user declined to execute the tool calls. Do not repeat the same request. \
                       Respond as best you can without the tool."
-                .to_string(),
+                    .to_string(),
             tool_calls: None,
             name: None,
         });
@@ -440,7 +450,9 @@ fn draw_confirmation_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = vec![Line::from(Span::styled(
         "AI wants to use tools",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     ))];
 
     if let Some((_, tool_calls, _)) = &app.pending_tool_calls {
@@ -456,7 +468,11 @@ fn draw_confirmation_panel(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let details = Paragraph::new(Text::from(lines))
-        .block(Block::default().title(" Tool Approval ").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(" Tool Approval ")
+                .borders(Borders::ALL),
+        )
         .wrap(Wrap { trim: false })
         .scroll((app.confirmation_scroll, 0));
     frame.render_widget(details, chunks[0]);
@@ -464,7 +480,9 @@ fn draw_confirmation_panel(frame: &mut Frame, area: Rect, app: &App) {
     let actions = Paragraph::new(Line::from(vec![
         Span::styled(
             "[y] accept",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
@@ -499,7 +517,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or("Chat");
             format!(" {t} ")
         }
-        None => " Select a chat or press n to create one ".to_string(),
+        None => "".to_string(),
     };
 
     let mut lines: Vec<Line> = Vec::new();
@@ -638,25 +656,46 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
     let top_bar = if app.loading {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " pj ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("  "),
             Span::styled(" Thinking... ", Style::default().fg(Color::Yellow)),
         ]))
     } else if app.waiting_confirmation {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " pj ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("  "),
             Span::styled(" Awaiting confirmation ", Style::default().fg(Color::Green)),
             Span::raw(" "),
-            Span::styled("[y] accept [n] deny [↑/↓] scroll", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "[y] accept [n] deny [↑/↓] scroll",
+                Style::default().fg(Color::Yellow),
+            ),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " pj ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("  "),
-            Span::styled(format!(" {} chats ", app.chats.len()), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" {} chats ", app.chats.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]))
     };
     frame.render_widget(top_bar, outer[0]);
@@ -706,7 +745,12 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                 CliEvent::Error { chat_id, message } => {
                     app.loading = false;
                     app.loading_chat_id = None;
-                    let _ = add_message(&app.pool, chat_id, "assistant", &format!("Error: {message}"));
+                    let _ = add_message(
+                        &app.pool,
+                        chat_id,
+                        "assistant",
+                        &format!("Error: {message}"),
+                    );
                     let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
                     let _ = publish_chat_change(&ChatChange::Activity {
                         id: chat_id,
@@ -804,8 +848,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                         app.confirmation_scroll = app.confirmation_scroll.saturating_sub(1);
                     }
                     KeyCode::Down => {
-                        let max_scroll =
-                            app.confirmation_line_count().saturating_sub(1) as u16;
+                        let max_scroll = app.confirmation_line_count().saturating_sub(1) as u16;
                         app.confirmation_scroll =
                             app.confirmation_scroll.saturating_add(1).min(max_scroll);
                     }
@@ -862,7 +905,9 @@ fn handle_input_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Tab => app.focus = Focus::Sidebar,
         KeyCode::Char(c) => app.input.push(c),
-        KeyCode::Backspace => { app.input.pop(); }
+        KeyCode::Backspace => {
+            app.input.pop();
+        }
         _ => {}
     }
 }
@@ -873,7 +918,10 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
 
     let chat = match create_chat(pool) {
         Ok(c) => c,
-        Err(e) => { eprintln!("Error: {e}"); return; }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
     };
     let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
 
@@ -906,13 +954,15 @@ async fn run_cli_turn(pool: &DbPool, chat_id: i64, ollama_url: &str, model: &str
                 let parsed_tcs = tools::parse_tool_calls_from_text(text);
                 let clean_text = tools::strip_tool_calls_from_text(text);
 
-                let tool_calls = tools::normalize_tool_calls(&(if !native_tcs.is_empty() {
-                    native_tcs
-                } else if !parsed_tcs.is_empty() {
-                    parsed_tcs
-                } else {
-                    Vec::new()
-                }));
+                let tool_calls = tools::normalize_tool_calls(
+                    &(if !native_tcs.is_empty() {
+                        native_tcs
+                    } else if !parsed_tcs.is_empty() {
+                        parsed_tcs
+                    } else {
+                        Vec::new()
+                    }),
+                );
 
                 if !clean_text.is_empty() {
                     println!("{}", strip_code_blocks(&clean_text));
