@@ -472,7 +472,7 @@ fn draw_confirmation_panel(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("[j/k] scroll", Style::default().fg(Color::Yellow)),
+        Span::styled("[↑/↓] scroll", Style::default().fg(Color::Yellow)),
     ]))
     .block(Block::default().borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM));
     frame.render_widget(actions, chunks[1]);
@@ -622,10 +622,15 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
         return;
     }
 
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(frame.area());
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(30), Constraint::Min(1)])
-        .split(frame.area());
+        .split(outer[1]);
 
     draw_sidebar(frame, chunks[0], app);
     draw_main(frame, chunks[1], app);
@@ -644,7 +649,7 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
             Span::raw("  "),
             Span::styled(" Awaiting confirmation ", Style::default().fg(Color::Green)),
             Span::raw(" "),
-            Span::styled("[y] accept [n] deny [j/k] scroll", Style::default().fg(Color::Yellow)),
+            Span::styled("[y] accept [n] deny [↑/↓] scroll", Style::default().fg(Color::Yellow)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
@@ -654,13 +659,7 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
             Span::styled(format!(" {} chats ", app.chats.len()), Style::default().fg(Color::DarkGray)),
         ]))
     };
-    let top_area = Rect {
-        x: chunks[0].x,
-        y: chunks[0].y,
-        width: chunks[0].width + chunks[1].width,
-        height: 1,
-    };
-    frame.render_widget(top_bar, top_area);
+    frame.render_widget(top_bar, outer[0]);
 }
 
 fn run_tui(pool: DbPool) -> io::Result<()> {
@@ -801,10 +800,10 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                         app.deny_tool();
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up => {
                         app.confirmation_scroll = app.confirmation_scroll.saturating_sub(1);
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down => {
                         let max_scroll =
                             app.confirmation_line_count().saturating_sub(1) as u16;
                         app.confirmation_scroll =

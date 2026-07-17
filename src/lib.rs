@@ -581,6 +581,100 @@ fn tool_calls_satisfy_intent(intent: ToolChatIntent, tool_calls: &[ToolCall]) ->
     }
 }
 
+fn tool_results_satisfy_intent(intent: ToolChatIntent, messages: &[OllamaChatMessage]) -> bool {
+    let required_tool = match intent {
+        ToolChatIntent::General => return false,
+        ToolChatIntent::CreateFile => "write_file",
+        ToolChatIntent::EditFile => "edit_file",
+    };
+
+    messages.iter().rev().any(|message| {
+        message.role == "tool" && message.name.as_deref() == Some(required_tool)
+    })
+}
+
+fn extract_file_content_from_response_text(text: &str) -> String {
+    let code_blocks = tools::extract_code_blocks(text);
+    if !code_blocks.is_empty() {
+        return code_blocks
+            .into_iter()
+            .map(|block| block.code)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+            .trim()
+            .to_string();
+    }
+
+    tools::strip_tool_calls_from_text(text).trim().to_string()
+}
+
+async fn generate_create_file_tool_call(
+    client: &reqwest::Client,
+    url: &str,
+    model: &str,
+    user_request: &str,
+) -> Result<ToolCall, String> {
+    let path = suggested_write_path_for_request(user_request).to_string();
+    let request = OllamaChatRequest {
+        model: model.to_string(),
+        messages: vec![
+            OllamaChatMessage {
+                role: "system".to_string(),
+                content: "Return only the full file contents for the requested file. Do not include markdown fences, explanations, XML tags, or tool-call syntax.".to_string(),
+                tool_calls: None,
+                name: None,
+            },
+            OllamaChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "Create the requested file content for this request:\n{user_request}\n\nTarget path: {path}"
+                ),
+                tool_calls: None,
+                name: None,
+            },
+        ],
+        stream: false,
+        tools: None,
+    };
+
+    let response = client
+        .post(url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama for file content generation: {e}"))?;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read file generation response body: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Ollama returned error {status} while generating file content: {text}"
+        ));
+    }
+
+    let resp: OllamaChatResponse = serde_json::from_str(&text).map_err(|e| {
+        let preview: String = text.chars().take(500).collect();
+        format!("Failed to parse file generation response ({e}): {preview}")
+    })?;
+    let content = extract_file_content_from_response_text(&resp.message.content);
+    if content.is_empty() {
+        return Err("Model returned empty file content for create-file request.".to_string());
+    }
+
+    Ok(ToolCall {
+        function: tools::ToolCallFunction {
+            name: "write_file".to_string(),
+            arguments: serde_json::json!({
+                "path": path,
+                "content": content,
+            }),
+        },
+    })
+}
+
 fn response_claims_file_change_without_tool_call(content: &str) -> bool {
     let lower = content.to_lowercase();
     let mentions_tmp = lower.contains("/tmp/");
@@ -605,10 +699,15 @@ fn response_claims_file_change_without_tool_call(content: &str) -> bool {
 fn should_force_tool_retry(
     requested_tools: bool,
     intent: ToolChatIntent,
+    intent_already_satisfied: bool,
     tool_calls: &[ToolCall],
     clean_text: &str,
 ) -> bool {
     if !requested_tools {
+        return false;
+    }
+
+    if intent_already_satisfied {
         return false;
     }
 
@@ -701,6 +800,8 @@ pub async fn chat_with_ollama(
     let intent = latest_user_message.as_deref()
         .map(classify_tool_chat_intent)
         .unwrap_or(ToolChatIntent::General);
+    let intent_already_satisfied =
+        tool_results_satisfy_intent(intent, &working_messages);
     let mut corrected_tool_retries = 0u8;
 
     loop {
@@ -742,9 +843,31 @@ pub async fn chat_with_ollama(
         let tool_calls = tools::normalize_tool_calls(&extract_tool_calls_from_response(&resp.message));
         let clean_text = tools::strip_tool_calls_from_text(&resp.message.content);
 
+        if requested_tools.is_some()
+            && intent == ToolChatIntent::CreateFile
+            && !intent_already_satisfied
+            && !tool_calls_satisfy_intent(intent, &tool_calls)
+        {
+            let user_request = latest_user_message
+                .as_deref()
+                .ok_or("Missing user request for create-file tool synthesis.")?;
+            let synthesized_tool_call =
+                generate_create_file_tool_call(client, &url, model, user_request).await?;
+            return Ok(OllamaChatResponse {
+                message: OllamaChatMessage {
+                    role: resp.message.role,
+                    content: String::new(),
+                    tool_calls: Some(vec![tools::normalize_tool_call(&synthesized_tool_call)]),
+                    name: None,
+                },
+                done: resp.done,
+            });
+        }
+
         if should_force_tool_retry(
             requested_tools.is_some(),
             intent,
+            intent_already_satisfied,
             &tool_calls,
             &clean_text,
         ) {
