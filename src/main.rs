@@ -1,5 +1,6 @@
 use actix_cors::Cors;
 use actix_files as fs;
+use actix_web::middleware::DefaultHeaders;
 use actix_web::{web, App, HttpResponse, HttpServer, Result};
 use futures::stream::StreamExt;
 use log::info;
@@ -24,7 +25,9 @@ async fn handle_list_chats(pool: web::Data<DbPool>) -> Result<HttpResponse> {
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-    Ok(HttpResponse::Ok().json(chats))
+    Ok(HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(chats))
 }
 
 async fn handle_create_chat(
@@ -62,7 +65,9 @@ async fn handle_get_messages(path: web::Path<i64>, pool: web::Data<DbPool>) -> R
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-    Ok(HttpResponse::Ok().json(messages))
+    Ok(HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(messages))
 }
 
 async fn handle_chat(
@@ -496,17 +501,28 @@ async fn handle_events(
     let (tx, rx_stream) = mpsc::unbounded_channel::<web::Bytes>();
 
     tokio::spawn(async move {
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+        let _ = tx.send(web::Bytes::from("event: connected\ndata: {}\n\n"));
         loop {
-            match rx.recv().await {
-                Ok(change) => {
-                    let payload = serde_json::to_string(&change).unwrap_or_default();
-                    let event = format!("data: {payload}\n\n");
-                    if tx.send(web::Bytes::from(event)).is_err() {
+            tokio::select! {
+                _ = heartbeat.tick() => {
+                    if tx.send(web::Bytes::from("event: ping\ndata: {}\n\n")).is_err() {
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
+                msg = rx.recv() => {
+                    match msg {
+                        Ok(change) => {
+                            let payload = serde_json::to_string(&change).unwrap_or_default();
+                            let event = format!("data: {payload}\n\n");
+                            if tx.send(web::Bytes::from(event)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
             }
         }
     });
@@ -556,6 +572,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(sessions.clone())
             .app_data(event_tx_data.clone())
             .wrap(cors)
+            .wrap(DefaultHeaders::new().add(("Cache-Control", "no-store")))
             .route("/api/chat", web::post().to(handle_chat))
             .route("/api/chat/tools", web::post().to(handle_tool_chat))
             .route("/api/chat/tools/confirm", web::post().to(handle_tool_confirm))

@@ -443,6 +443,8 @@
       let pendingSessionId = null;
       let pendingToolCalls = [];
       let pendingSessionChatId = null;
+      let chatEventSource = null;
+      let lastChatEventAt = 0;
 
       function isActiveChatLoading() {
         return isLoading && activeChatId !== null && activeChatId === loadingChatId;
@@ -602,7 +604,7 @@
 
       async function loadChats() {
         try {
-          const res = await fetch("/api/chats");
+          const res = await fetch("/api/chats", { cache: "no-store" });
           chats = await res.json();
           renderChatList();
         } catch (e) {
@@ -620,7 +622,7 @@
         messageInput.focus();
 
         try {
-          const res = await fetch("/api/chats/" + id + "/messages");
+          const res = await fetch("/api/chats/" + id + "/messages", { cache: "no-store" });
           const messages = await res.json();
           chatContainer.innerHTML = "";
           for (const msg of messages) {
@@ -679,10 +681,21 @@
       }
 
       function connectChatEvents() {
+        if (chatEventSource) {
+          chatEventSource.close();
+        }
+
         const eventSource = new EventSource("/api/events");
+        chatEventSource = eventSource;
+        lastChatEventAt = Date.now();
+
+        eventSource.onopen = () => {
+          lastChatEventAt = Date.now();
+        };
 
         eventSource.onmessage = async (event) => {
           try {
+            lastChatEventAt = Date.now();
             const change = JSON.parse(event.data);
             if (change.Deleted && activeChatId === change.Deleted.id) {
               clearPendingStateForChat(change.Deleted.id);
@@ -697,11 +710,28 @@
           }
         };
 
+        eventSource.addEventListener("connected", () => {
+          lastChatEventAt = Date.now();
+        });
+
+        eventSource.addEventListener("ping", () => {
+          lastChatEventAt = Date.now();
+        });
+
         eventSource.onerror = () => {
           eventSource.close();
+          if (chatEventSource === eventSource) {
+            chatEventSource = null;
+          }
           setTimeout(connectChatEvents, 2000);
         };
       }
+
+      setInterval(() => {
+        if (!chatEventSource || Date.now() - lastChatEventAt > 30000) {
+          connectChatEvents();
+        }
+      }, 5000);
 
       function updateChatTitle(id, title) {
         const chat = chats.find((c) => c.id === id);

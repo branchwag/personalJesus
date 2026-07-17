@@ -355,8 +355,9 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 "   "
             };
-            let label = if chat.title.len() > 22 {
-                format!("{}{}", prefix, &chat.title[..22])
+            let truncated_title: String = chat.title.chars().take(22).collect();
+            let label = if chat.title.chars().count() > 22 {
+                format!("{}{}", prefix, truncated_title)
             } else {
                 format!("{}{}", prefix, chat.title)
             };
@@ -497,8 +498,9 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
         .block(Block::default().title(" Input ").borders(Borders::ALL));
     frame.render_widget(input, chunks[1]);
 
-    if matches!(app.focus, Focus::Input) {
-        let cursor_col = app.input.chars().count() as u16 + 1;
+    if matches!(app.focus, Focus::Input) && chunks[1].width > 2 && chunks[1].height > 2 {
+        let max_cursor_col = chunks[1].width.saturating_sub(2);
+        let cursor_col = (app.input.chars().count() as u16 + 1).min(max_cursor_col);
         frame.set_cursor_position((chunks[1].x + cursor_col, chunks[1].y + 1));
     }
 }
@@ -676,7 +678,10 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                 }
 
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc => {
+                        app.exit = true;
+                    }
+                    KeyCode::Char('q') if matches!(app.focus, Focus::Sidebar) => {
                         app.exit = true;
                     }
                     KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
