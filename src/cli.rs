@@ -192,6 +192,10 @@ impl App {
 
         self.loading = true;
         self.loading_chat_id = Some(chat_id);
+        let _ = publish_chat_change(&ChatChange::Activity {
+            id: chat_id,
+            state: ChatActivityState::Thinking,
+        });
         let pool = self.pool.clone();
         let ollama_url = self.ollama_url.clone();
         let model = self.model.clone();
@@ -250,6 +254,7 @@ impl App {
                     })
                     .await
                     .ok();
+                    let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
                 }
 
                 if tool_calls.is_empty() {
@@ -286,6 +291,10 @@ impl App {
         self.waiting_confirmation = false;
         self.loading = true;
         self.loading_chat_id = Some(chat_id);
+        let _ = publish_chat_change(&ChatChange::Activity {
+            id: chat_id,
+            state: ChatActivityState::Thinking,
+        });
 
         let mut extra = messages;
         for tc in &tool_calls {
@@ -319,6 +328,10 @@ impl App {
         self.waiting_confirmation = false;
         self.loading = true;
         self.loading_chat_id = Some(chat_id);
+        let _ = publish_chat_change(&ChatChange::Activity {
+            id: chat_id,
+            state: ChatActivityState::Thinking,
+        });
 
         let mut extra = messages;
         extra.push(OllamaChatMessage {
@@ -615,6 +628,10 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                 CliEvent::TextReady { chat_id } => {
                     app.loading = false;
                     app.loading_chat_id = None;
+                    let _ = publish_chat_change(&ChatChange::Activity {
+                        id: chat_id,
+                        state: ChatActivityState::Idle,
+                    });
                     if app.active_chat_id == Some(chat_id) {
                         app.load_messages();
                     }
@@ -626,6 +643,10 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                 } => {
                     app.loading = false;
                     app.loading_chat_id = None;
+                    let _ = publish_chat_change(&ChatChange::Activity {
+                        id: chat_id,
+                        state: ChatActivityState::AwaitingToolConfirmation,
+                    });
                     if app.active_chat_id == Some(chat_id) {
                         app.load_messages();
                     }
@@ -636,6 +657,11 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     app.loading = false;
                     app.loading_chat_id = None;
                     let _ = add_message(&app.pool, chat_id, "assistant", &format!("Error: {message}"));
+                    let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
+                    let _ = publish_chat_change(&ChatChange::Activity {
+                        id: chat_id,
+                        state: ChatActivityState::Idle,
+                    });
                     if app.active_chat_id == Some(chat_id) {
                         app.load_messages();
                     }
@@ -678,6 +704,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                         }
                     }
                     ChatChange::Upsert { .. } => {}
+                    ChatChange::Activity { .. } => {}
                 }
             }
             app.load_chats();
@@ -966,7 +993,7 @@ async fn run_plain_loop(pool: &DbPool) {
 
 #[tokio::main]
 async fn main() {
-    let database_url = get_env_or("DATABASE_URL", "data/chat.db");
+    let database_url = database_url();
     let pool = create_pool(&database_url);
     init_db(&pool);
 

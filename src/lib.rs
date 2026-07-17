@@ -18,13 +18,29 @@ use tools::ToolCall;
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ChatActivityState {
+    Idle,
+    Thinking,
+    AwaitingToolConfirmation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ChatChange {
     Upsert { id: i64 },
     Deleted { id: i64 },
+    Activity { id: i64, state: ChatActivityState },
+}
+
+pub fn default_database_url() -> String {
+    format!("{}/data/chat.db", env!("CARGO_MANIFEST_DIR"))
+}
+
+pub fn database_url() -> String {
+    env::var("DATABASE_URL").unwrap_or_else(|_| default_database_url())
 }
 
 pub fn socket_path() -> PathBuf {
-    let db_url = get_env_or("DATABASE_URL", "data/chat.db");
+    let db_url = database_url();
     let mut p = PathBuf::from(&db_url);
     p.pop();
     p.push("events.sock");
@@ -236,7 +252,7 @@ pub fn list_chats(pool: &DbPool) -> Result<Vec<ChatSummary>, String> {
              FROM chats c
              LEFT JOIN messages m ON m.chat_id = c.id
              GROUP BY c.id
-             ORDER BY c.created_at DESC",
+             ORDER BY c.created_at DESC, c.id DESC",
         )
         .map_err(|e| format!("{e}"))?;
     let rows = stmt

@@ -112,6 +112,10 @@ async fn handle_chat(
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Activity {
+        id: chat_id,
+        state: ChatActivityState::Thinking,
+    });
 
     let client = shared_ollama_http_client();
     let request = OllamaRequest {
@@ -130,6 +134,7 @@ async fn handle_chat(
             let (tx, rx) = mpsc::unbounded_channel::<web::Bytes>();
             let pool2 = pool.clone();
             let chat_id2 = chat_id;
+            let event_tx2 = event_tx.get_ref().clone();
 
             tokio::spawn(async move {
                 let mut stream = Box::pin(resp.bytes_stream());
@@ -170,7 +175,12 @@ async fn handle_chat(
                     })
                     .await
                     .ok();
+                    let _ = event_tx2.send(ChatChange::Upsert { id: chat_id2 });
                 }
+                let _ = event_tx2.send(ChatChange::Activity {
+                    id: chat_id2,
+                    state: ChatActivityState::Idle,
+                });
             });
 
             Ok(HttpResponse::Ok()
@@ -183,6 +193,10 @@ async fn handle_chat(
         }
         Err(e) => {
             log::error!("Failed to connect to Ollama: {}", e);
+            let _ = event_tx.send(ChatChange::Activity {
+                id: chat_id,
+                state: ChatActivityState::Idle,
+            });
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Failed to connect to Ollama: {e}")
             })))
@@ -268,6 +282,10 @@ async fn handle_tool_chat(
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Activity {
+        id: chat_id,
+        state: ChatActivityState::Thinking,
+    });
 
     let tools = Some(tools::get_tool_definitions());
     match chat_with_ollama(&ollama_url, &model, all_msgs.clone(), tools).await {
@@ -290,9 +308,14 @@ async fn handle_tool_chat(
                     .await
                     .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
                     .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
             }
 
             if tool_calls.is_empty() {
+                let _ = event_tx.send(ChatChange::Activity {
+                    id: chat_id,
+                    state: ChatActivityState::Idle,
+                });
                 Ok(HttpResponse::Ok().json(ToolChatResponse {
                     r#type: "text".to_string(),
                     content: clean_text,
@@ -312,6 +335,10 @@ async fn handle_tool_chat(
                 let session_id = generate_session_id();
                 let mut map = sessions.lock().unwrap();
                 map.insert(session_id.clone(), SessionState { messages: context, chat_id });
+                let _ = event_tx.send(ChatChange::Activity {
+                    id: chat_id,
+                    state: ChatActivityState::AwaitingToolConfirmation,
+                });
 
                 Ok(HttpResponse::Ok().json(ToolChatResponse {
                     r#type: "tool_calls".to_string(),
@@ -324,6 +351,10 @@ async fn handle_tool_chat(
         }
         Err(e) => {
             log::error!("Ollama error: {}", e);
+            let _ = event_tx.send(ChatChange::Activity {
+                id: chat_id,
+                state: ChatActivityState::Idle,
+            });
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Ollama error: {e}")
             })))
@@ -335,6 +366,7 @@ async fn handle_tool_confirm(
     req: web::Json<ToolConfirmRequest>,
     pool: web::Data<DbPool>,
     sessions: web::Data<SessionMap>,
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "gemma2:9b");
@@ -409,6 +441,10 @@ async fn handle_tool_confirm(
             name: Some(tool_calls[0].function.name.clone()),
         });
     }
+    let _ = event_tx.send(ChatChange::Activity {
+        id: state.chat_id,
+        state: ChatActivityState::Thinking,
+    });
 
     let tools = Some(tools::get_tool_definitions());
     match chat_with_ollama(&ollama_url, &model, extra.clone(), tools).await {
@@ -431,9 +467,14 @@ async fn handle_tool_confirm(
                     .await
                     .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
                     .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                let _ = event_tx.send(ChatChange::Upsert { id: state.chat_id });
             }
 
             if tool_calls.is_empty() {
+                let _ = event_tx.send(ChatChange::Activity {
+                    id: state.chat_id,
+                    state: ChatActivityState::Idle,
+                });
                 Ok(HttpResponse::Ok().json(ToolChatResponse {
                     r#type: "text".to_string(),
                     content: clean_text,
@@ -453,6 +494,10 @@ async fn handle_tool_confirm(
                 let session_id = generate_session_id();
                 let mut map = sessions.lock().unwrap();
                 map.insert(session_id.clone(), SessionState { messages: context, chat_id: state.chat_id });
+                let _ = event_tx.send(ChatChange::Activity {
+                    id: state.chat_id,
+                    state: ChatActivityState::AwaitingToolConfirmation,
+                });
 
                 Ok(HttpResponse::Ok().json(ToolChatResponse {
                     r#type: "tool_calls".to_string(),
@@ -465,6 +510,10 @@ async fn handle_tool_confirm(
         }
         Err(e) => {
             log::error!("Ollama error: {}", e);
+            let _ = event_tx.send(ChatChange::Activity {
+                id: state.chat_id,
+                state: ChatActivityState::Idle,
+            });
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Ollama error: {e}")
             })))
@@ -543,7 +592,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     let port = get_env_or("PORT", "8080").parse::<u16>().unwrap_or(8080);
-    let database_url = get_env_or("DATABASE_URL", "data/chat.db");
+    let database_url = database_url();
 
     let pool = create_pool(&database_url);
     init_db(&pool);

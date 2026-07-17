@@ -56,7 +56,7 @@ To use `pj` from anywhere, add this alias to your `~/.bashrc` (make sure `DATABA
 alias pj='DATABASE_URL=/path/to/pj/data/chat.db /path/to/pj/target/release/pj'
 ```
 
-The CLI shares the same SQLite database as the web app, so conversations are synced between both interfaces.
+The CLI shares the same SQLite database as the web app, so conversations are synced between both interfaces. If `DATABASE_URL` is not set, both binaries now default to the project database at `/home/whiterabbit/CodingStuff/area51/aiMagic/personalJesus/data/chat.db` instead of using a cwd-relative path.
 
 ## Unicode and CJK Text
 

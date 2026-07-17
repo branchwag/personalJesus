@@ -83,7 +83,7 @@ SQLite via r2d2 connection pool. Schema:
 - `chats` — id, title, created_at
 - `messages` — id, chat_id, role, content, created_at
 
-DB path: `DATABASE_URL` env var (default `data/chat.db`).
+DB path: `DATABASE_URL` env var. If unset, both binaries default to the project database at `/home/whiterabbit/CodingStuff/area51/aiMagic/personalJesus/data/chat.db`.
 
 ## Code Conventions
 

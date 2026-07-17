@@ -153,6 +153,13 @@
         font-size: 0.9rem;
       }
 
+      .chat-status {
+        flex-shrink: 0;
+        font-size: 0.72rem;
+        color: #fbbf24;
+        white-space: nowrap;
+      }
+
       .delete-btn {
         background: none;
         border: none;
@@ -482,20 +489,36 @@
       let pendingSessionId = null;
       let pendingToolCalls = [];
       let pendingSessionChatId = null;
+      let sharedActivityByChat = {};
       let chatEventSource = null;
       let lastChatEventAt = 0;
+      let lastKnownChatIds = new Set();
+
+      function getSharedActivityState(chatId) {
+        if (chatId === null || chatId === undefined) return "idle";
+        return sharedActivityByChat[chatId] || "idle";
+      }
+
+      function getActiveChatActivityState() {
+        if (pendingSessionChatId !== null && pendingSessionChatId === activeChatId) {
+          return "awaiting_tool_confirmation";
+        }
+        if (isLoading && loadingChatId !== null && loadingChatId === activeChatId) {
+          return "thinking";
+        }
+        return getSharedActivityState(activeChatId);
+      }
 
       function isActiveChatLoading() {
-        return isLoading && activeChatId !== null && activeChatId === loadingChatId;
+        return getActiveChatActivityState() === "thinking";
       }
 
       function syncComposerState() {
-        const awaitingToolDecision =
-          pendingSessionId !== null &&
-          pendingSessionChatId !== null &&
-          pendingSessionChatId === activeChatId;
-        sendButton.disabled = isLoading;
-        messageInput.disabled = awaitingToolDecision;
+        const activity = getActiveChatActivityState();
+        const awaitingToolDecision = activity === "awaiting_tool_confirmation";
+        const thinking = activity === "thinking";
+        sendButton.disabled = isLoading || thinking;
+        messageInput.disabled = awaitingToolDecision || thinking;
       }
 
       function clearPendingStateForChat(chatId) {
@@ -522,6 +545,15 @@
           title.className = "chat-title";
           title.textContent = chat.title;
 
+          const sharedActivity = getSharedActivityState(chat.id);
+          const status = document.createElement("span");
+          status.className = "chat-status";
+          if (sharedActivity === "thinking") {
+            status.textContent = "Thinking...";
+          } else if (sharedActivity === "awaiting_tool_confirmation") {
+            status.textContent = "Awaiting confirm";
+          }
+
           const del = document.createElement("button");
           del.className = "delete-btn";
           del.textContent = "\u00d7";
@@ -532,6 +564,9 @@
           });
 
           div.appendChild(title);
+          if (status.textContent) {
+            div.appendChild(status);
+          }
           div.appendChild(del);
           div.addEventListener("click", () => selectChat(chat.id));
           chatList.appendChild(div);
@@ -621,14 +656,51 @@
         return messageDiv;
       }
 
-      function addLoadingMessage() {
-        const loadingDiv = document.createElement("div");
-        loadingDiv.className = "message loading";
-        loadingDiv.textContent = "Thinking...";
-        loadingDiv.id = "loadingMessage";
-        chatContainer.appendChild(loadingDiv);
+      function addLoadingMessage(text = "Thinking...") {
+        let loadingDiv = document.getElementById("loadingMessage");
+        if (!loadingDiv) {
+          loadingDiv = document.createElement("div");
+          loadingDiv.className = "message loading";
+          loadingDiv.id = "loadingMessage";
+          chatContainer.appendChild(loadingDiv);
+        }
+        loadingDiv.textContent = text;
         chatContainer.scrollTop = chatContainer.scrollHeight;
         return loadingDiv;
+      }
+
+      function renderSharedActivity() {
+        const activity = getActiveChatActivityState();
+        if (activity === "thinking") {
+          addLoadingMessage("Thinking...");
+        } else if (activity === "awaiting_tool_confirmation" && pendingSessionChatId !== activeChatId) {
+          addLoadingMessage("Awaiting tool confirmation in another client...");
+        } else {
+          document.getElementById("loadingMessage")?.remove();
+        }
+      }
+
+      async function renderMessagesForChat(id) {
+        const res = await fetch("/api/chats/" + id + "/messages", { cache: "no-store" });
+        const messages = await res.json();
+        chatContainer.innerHTML = "";
+        for (const msg of messages) {
+          addMessage(msg.content, msg.role);
+        }
+        if (messages.length === 0 && getActiveChatActivityState() === "idle") {
+          showEmptyState();
+        }
+        renderSharedActivity();
+        if (
+          pendingSessionId &&
+          pendingSessionChatId === id &&
+          !isLoading
+        ) {
+          showToolModal(pendingToolCalls, pendingSessionId, id);
+        } else {
+          toolModal.classList.remove("visible");
+        }
+        return messages;
       }
 
       function removeEmptyState() {
@@ -645,9 +717,23 @@
         try {
           const res = await fetch("/api/chats", { cache: "no-store" });
           chats = await res.json();
+          lastKnownChatIds = new Set(chats.map((c) => c.id));
           renderChatList();
         } catch (e) {
           console.error("Failed to load chats:", e);
+        }
+      }
+
+      async function refreshChatsWithFallback() {
+        const previousIds = new Set(chats.map((c) => c.id));
+        await loadChats();
+        const newChat = chats.find((c) => !previousIds.has(c.id));
+        if (newChat && activeChatId === null) {
+          await selectChat(newChat.id);
+          return;
+        }
+        if (activeChatId !== null && chats.some((c) => c.id === activeChatId)) {
+          renderSharedActivity();
         }
       }
 
@@ -661,25 +747,7 @@
         messageInput.focus();
 
         try {
-          const res = await fetch("/api/chats/" + id + "/messages", { cache: "no-store" });
-          const messages = await res.json();
-          chatContainer.innerHTML = "";
-          for (const msg of messages) {
-            addMessage(msg.content, msg.role);
-          }
-          if (loadingChatId === id) {
-            addLoadingMessage();
-          }
-          if (messages.length === 0 && loadingChatId !== id) {
-            showEmptyState();
-          }
-          if (
-            pendingSessionId &&
-            pendingSessionChatId === id &&
-            !isLoading
-          ) {
-            showToolModal(pendingToolCalls, pendingSessionId, id);
-          }
+          await renderMessagesForChat(id);
         } catch (e) {
           console.error("Failed to load messages:", e);
           showEmptyState();
@@ -736,13 +804,62 @@
           try {
             lastChatEventAt = Date.now();
             const change = JSON.parse(event.data);
+            const knownChatIds = new Set(chats.map((c) => c.id));
+            const changedChatId =
+              change.Upsert?.id ??
+              change.Deleted?.id ??
+              change.Activity?.id ??
+              null;
             if (change.Deleted && activeChatId === change.Deleted.id) {
               clearPendingStateForChat(change.Deleted.id);
+              delete sharedActivityByChat[change.Deleted.id];
               activeChatId = null;
               chatContainer.innerHTML = "";
               showEmptyState();
             }
-            await loadChats();
+            if (change.Activity) {
+              const chatId = change.Activity.id;
+              const state = change.Activity.state;
+              if (state === "Idle") {
+                delete sharedActivityByChat[chatId];
+              } else if (state === "Thinking") {
+                sharedActivityByChat[chatId] = "thinking";
+              } else if (state === "AwaitingToolConfirmation") {
+                sharedActivityByChat[chatId] = "awaiting_tool_confirmation";
+              }
+            }
+            await refreshChatsWithFallback();
+            const isNewRemoteChat =
+              change.Upsert &&
+              changedChatId !== null &&
+              !knownChatIds.has(changedChatId) &&
+              chats.some((c) => c.id === changedChatId);
+            if (isNewRemoteChat) {
+              await selectChat(changedChatId);
+              syncComposerState();
+              return;
+            }
+            if (
+              activeChatId === null &&
+              changedChatId !== null &&
+              !change.Deleted &&
+              chats.some((c) => c.id === changedChatId)
+            ) {
+              activeChatId = changedChatId;
+              renderChatList();
+              await renderMessagesForChat(activeChatId);
+              syncComposerState();
+              return;
+            }
+            if (
+              activeChatId !== null &&
+              ((change.Upsert && change.Upsert.id === activeChatId) ||
+               (change.Activity && change.Activity.id === activeChatId))
+            ) {
+              await renderMessagesForChat(activeChatId);
+            } else {
+              renderSharedActivity();
+            }
             syncComposerState();
           } catch (e) {
             console.error("Failed to handle chat event:", e);
@@ -771,6 +888,12 @@
           connectChatEvents();
         }
       }, 5000);
+
+      setInterval(() => {
+        refreshChatsWithFallback().catch((e) => {
+          console.error("Fallback chat refresh failed:", e);
+        });
+      }, 3000);
 
       function updateChatTitle(id, title) {
         const chat = chats.find((c) => c.id === id);
