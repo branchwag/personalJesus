@@ -172,6 +172,7 @@ impl App {
         let _ = update_title_from_message(&self.pool, chat_id, &message);
         let _ = add_message(&self.pool, chat_id, "user", &message);
         let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
+        self.load_chats();
         self.load_messages();
 
         self.loading = true;
