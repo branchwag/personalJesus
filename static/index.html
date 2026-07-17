@@ -11,9 +11,36 @@
         font-weight: 400;
         font-display: swap;
         src: url(/fonts/SpecialElite.ttf) format('truetype');
+        unicode-range:
+          U+0000-00FF,
+          U+0100-024F,
+          U+1E00-1EFF,
+          U+2000-206F,
+          U+20A0-20CF;
+      }
+
+      @font-face {
+        font-family: 'Noto Sans CJK SC Local';
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url(/fonts/NotoSansCJKsc-Regular.otf) format('opentype');
       }
     </style>
     <style>
+      :root {
+        --font-latin: "Special Elite";
+        --font-cjk: "Noto Sans CJK SC Local",
+          "Noto Sans CJK SC",
+          "Noto Sans SC",
+          "PingFang SC",
+          "Hiragino Sans GB",
+          "Microsoft YaHei",
+          "WenQuanYi Micro Hei",
+          sans-serif;
+        --font-ui: var(--font-latin), var(--font-cjk);
+      }
+
       * {
         margin: 0;
         padding: 0;
@@ -21,7 +48,7 @@
       }
 
       body {
-        font-family: "Special Elite", monospace;
+        font-family: var(--font-cjk);
         background-color: #0a0a0a;
         color: #ededed;
         height: 100vh;
@@ -79,6 +106,7 @@
       }
 
       .sidebar-header h2 {
+        font-family: var(--font-ui);
         font-size: 1.1rem;
         white-space: nowrap;
       }
@@ -161,6 +189,7 @@
         justify-content: space-between;
         padding: 0.75rem 1rem;
         border-bottom: 1px solid #222;
+        font-family: var(--font-ui);
         font-size: 1.25rem;
       }
 
@@ -185,6 +214,7 @@
         max-width: 80%;
         word-wrap: break-word;
         white-space: pre-wrap;
+        font-family: var(--font-ui);
       }
 
       .message.user {
@@ -307,6 +337,7 @@
         color: #d1d5db;
         white-space: pre-wrap;
         word-break: break-all;
+        font-family: var(--font-cjk);
       }
 
       .modal-buttons {
@@ -343,6 +374,14 @@
         border-radius: 0.25rem;
         cursor: pointer;
         font-family: inherit;
+      }
+
+      button,
+      input[type="text"],
+      .chat-title,
+      .message,
+      .empty-state {
+        font-family: var(--font-cjk);
       }
       .save-btn:hover {
         background-color: #3b82f6;

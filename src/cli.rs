@@ -8,8 +8,11 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use std::env;
 use std::io::{self, stdout, Write};
+use std::process::Command;
 use tokio::sync::mpsc;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn strip_code_blocks(text: &str) -> String {
     let mut result = String::new();
@@ -35,6 +38,61 @@ fn strip_code_blocks(text: &str) -> String {
         }
     }
     result
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    let mut result = String::new();
+    let mut width = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > max_width {
+            break;
+        }
+        result.push(ch);
+        width += ch_width;
+    }
+    result
+}
+
+fn terminal_font_supports_cjk() -> bool {
+    let output = Command::new("fc-list")
+        .args([
+            ":spacing=100",
+            "family",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return true;
+    };
+    if !output.status.success() {
+        return true;
+    }
+
+    let families = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    [
+        "noto sans mono cjk",
+        "noto sans cjk",
+        "source han mono",
+        "source han sans",
+        "wenquanyi",
+        "microsoft yahei",
+        "pingfang",
+        "hiragino",
+        "sarasa",
+        "droid sans fallback",
+        "unifont",
+    ]
+    .iter()
+    .any(|name| families.contains(name))
+}
+
+fn should_auto_fallback_to_plain() -> bool {
+    if env::var("PJ_FORCE_TUI").ok().as_deref() == Some("1") {
+        return false;
+    }
+
+    !terminal_font_supports_cjk()
 }
 
 #[derive(PartialEq)]
@@ -356,8 +414,8 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 "   "
             };
-            let truncated_title: String = chat.title.chars().take(22).collect();
-            let label = if chat.title.chars().count() > 22 {
+            let truncated_title = truncate_display_width(&chat.title, 22);
+            let label = if UnicodeWidthStr::width(chat.title.as_str()) > 22 {
                 format!("{}{}", prefix, truncated_title)
             } else {
                 format!("{}{}", prefix, chat.title)
@@ -501,7 +559,8 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
 
     if matches!(app.focus, Focus::Input) && chunks[1].width > 2 && chunks[1].height > 2 {
         let max_cursor_col = chunks[1].width.saturating_sub(2);
-        let cursor_col = (app.input.chars().count() as u16 + 1).min(max_cursor_col);
+        let input_width = UnicodeWidthStr::width(app.input.as_str()) as u16;
+        let cursor_col = (input_width + 1).min(max_cursor_col);
         frame.set_cursor_position((chunks[1].x + cursor_col, chunks[1].y + 1));
     }
 }
@@ -784,17 +843,22 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
     println!("You: {question}");
     print!("AI: ");
     io::stdout().flush().ok();
+    run_cli_turn(pool, chat.id, &ollama_url, &model).await;
+}
 
-    let current_msgs = match build_messages_from_db(pool, chat.id) {
+async fn run_cli_turn(pool: &DbPool, chat_id: i64, ollama_url: &str, model: &str) {
+    let current_msgs = match build_messages_from_db(pool, chat_id) {
         Ok(m) => m,
-        Err(e) => { eprintln!("\nError: {e}"); return; }
+        Err(e) => {
+            eprintln!("\nError: {e}");
+            return;
+        }
     };
 
-    // Tool loop
     let mut current_msgs = current_msgs;
     let tools = Some(tools::get_tool_definitions());
     loop {
-        match chat_with_ollama(&ollama_url, &model, current_msgs.clone(), tools.clone()).await {
+        match chat_with_ollama(ollama_url, model, current_msgs.clone(), tools.clone()).await {
             Ok(resp) => {
                 let native_tcs = resp.message.tool_calls.clone().unwrap_or_default();
                 let text = &resp.message.content;
@@ -811,7 +875,8 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
 
                 if !clean_text.is_empty() {
                     println!("{}", strip_code_blocks(&clean_text));
-                    let _ = add_message(pool, chat.id, "assistant", &clean_text);
+                    let _ = add_message(pool, chat_id, "assistant", &clean_text);
+                    let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
                 }
 
                 if tool_calls.is_empty() {
@@ -841,8 +906,8 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
                                     let _ = std::fs::create_dir_all(parent);
                                 }
                                 match std::fs::write(&path, &block.code) {
-                                    Ok(_) => println!("  ✅ Created {path}"),
-                                    Err(e) => println!("  ❌ Error: {e}"),
+                                    Ok(_) => println!("  Created {path}"),
+                                    Err(e) => println!("  Error: {e}"),
                                 }
                             }
                         }
@@ -850,7 +915,6 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
                     break;
                 }
 
-                // Save assistant message with tool_calls
                 current_msgs.push(OllamaChatMessage {
                     role: "assistant".to_string(),
                     content: clean_text.clone(),
@@ -860,7 +924,7 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
 
                 println!();
                 for tc in &tool_calls {
-                    println!("  ⚡ {}", tools::tool_call_description(tc));
+                    println!("  {}", tools::tool_call_description(tc));
                 }
                 print!("\nExecute? [y/N] ");
                 io::stdout().flush().ok();
@@ -899,6 +963,50 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
     }
 }
 
+async fn run_plain_loop(pool: &DbPool) {
+    let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
+    let model = get_env_or("MODEL_NAME", "gemma2:9b");
+
+    let chat = match create_chat(pool) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
+    };
+    let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
+
+    println!("pj plain mode. Type /exit to quit.\n");
+
+    loop {
+        print!("You: ");
+        io::stdout().flush().ok();
+
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            eprintln!("\nError: failed to read input");
+            break;
+        }
+
+        let question = input.trim().to_string();
+        if question.is_empty() {
+            continue;
+        }
+        if question == "/exit" {
+            break;
+        }
+
+        let _ = update_title_from_message(pool, chat.id, &question);
+        let _ = add_message(pool, chat.id, "user", &question);
+        let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
+
+        print!("AI: ");
+        io::stdout().flush().ok();
+        run_cli_turn(pool, chat.id, &ollama_url, &model).await;
+        println!();
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let database_url = get_env_or("DATABASE_URL", "data/chat.db");
@@ -906,11 +1014,21 @@ async fn main() {
     init_db(&pool);
 
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
+    if args.len() > 1 && args[1] == "--plain" {
+        run_plain_loop(&pool).await;
+    } else if args.len() > 1 && args[1] == "--tui" {
+        if let Err(e) = run_tui(pool) {
+            eprintln!("TUI error: {e}");
+            let _ = restore_terminal();
+        }
+    } else if args.len() > 1 {
         let question = args[1..].join(" ");
         run_one_shot(&pool, &question).await;
     } else {
-        if let Err(e) = run_tui(pool) {
+        if should_auto_fallback_to_plain() {
+            eprintln!("No CJK-capable monospace terminal font detected. Starting plain mode. Use `pj --tui` or `PJ_FORCE_TUI=1` to force the fullscreen UI.");
+            run_plain_loop(&pool).await;
+        } else if let Err(e) = run_tui(pool) {
             eprintln!("TUI error: {e}");
             let _ = restore_terminal();
         }

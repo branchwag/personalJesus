@@ -40,8 +40,14 @@ A command-line interface is available for chatting from the terminal:
 # One-shot: ask a question and get a response
 ./target/release/pj "What is the capital of France?"
 
-# Interactive mode
+# Default interactive mode
 ./target/release/pj
+
+# Plain terminal mode
+./target/release/pj --plain
+
+# Force fullscreen TUI mode
+./target/release/pj --tui
 ```
 
 To use `pj` from anywhere, add this alias to your `~/.bashrc` (make sure `DATABASE_URL` points to the project's database so the CLI and web app share the same data):
@@ -51,6 +57,22 @@ alias pj='DATABASE_URL=/path/to/pj/data/chat.db /path/to/pj/target/release/pj'
 ```
 
 The CLI shares the same SQLite database as the web app, so conversations are synced between both interfaces.
+
+## Unicode and CJK Text
+
+Chat content is stored in SQLite as UTF-8. If Chinese text looks wrong, the failure is usually in the rendering surface:
+
+- Web UI: the bundled `Special Elite` font only covers Latin text, so Chinese glyphs must come from an installed fallback font such as `Noto Sans CJK SC`, `PingFang SC`, or `Microsoft YaHei`.
+- Web UI: the app now bundles a local `Noto Sans CJK SC` font for Chinese text, so browser rendering does not depend on host font packages.
+- CLI/TUI: your terminal emulator must use a font with CJK glyph coverage and a UTF-8 locale such as `en_US.UTF-8`.
+- The default interactive startup now falls back to `--plain` automatically when no CJK-capable monospace font is detected through fontconfig.
+- Use `pj --tui` or `PJ_FORCE_TUI=1` if you want to force the fullscreen Ratatui UI anyway.
+
+You can verify the stored content directly with:
+
+```bash
+sqlite3 data/chat.db "select role, content from messages order by id desc limit 5;"
+```
 
 ## Contributing
 
