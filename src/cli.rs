@@ -363,7 +363,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .constraints([Constraint::Min(1), Constraint::Length(7)])
         .split(area);
 
     let title = match app.active_chat_id {
