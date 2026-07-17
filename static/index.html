@@ -492,7 +492,16 @@
       let sharedActivityByChat = {};
       let chatEventSource = null;
       let lastChatEventAt = 0;
+      let lastChatRefreshAt = 0;
       let lastKnownChatIds = new Set();
+      let chatRefreshInFlight = null;
+
+      const CHAT_EVENT_STALE_MS = 20000;
+      const CHAT_RECONNECT_CHECK_MS = 5000;
+      const CHAT_DISCONNECTED_POLL_MS = 3000;
+      const CHAT_REMOTE_ACTIVITY_POLL_MS = 4000;
+      const CHAT_VISIBLE_STALE_POLL_MS = 30000;
+      const CHAT_REFRESH_COOLDOWN_MS = 2000;
 
       function getSharedActivityState(chatId) {
         if (chatId === null || chatId === undefined) return "idle";
@@ -718,6 +727,7 @@
           const res = await fetch("/api/chats", { cache: "no-store" });
           chats = await res.json();
           lastKnownChatIds = new Set(chats.map((c) => c.id));
+          lastChatRefreshAt = Date.now();
           renderChatList();
         } catch (e) {
           console.error("Failed to load chats:", e);
@@ -725,16 +735,71 @@
       }
 
       async function refreshChatsWithFallback() {
-        const previousIds = new Set(chats.map((c) => c.id));
-        await loadChats();
-        const newChat = chats.find((c) => !previousIds.has(c.id));
-        if (newChat && activeChatId === null) {
-          await selectChat(newChat.id);
+        if (chatRefreshInFlight) {
+          return chatRefreshInFlight;
+        }
+
+        const refreshPromise = (async () => {
+          const previousIds = new Set(chats.map((c) => c.id));
+          await loadChats();
+          const newChat = chats.find((c) => !previousIds.has(c.id));
+          if (newChat && activeChatId === null) {
+            await selectChat(newChat.id);
+            return;
+          }
+          if (activeChatId !== null && chats.some((c) => c.id === activeChatId)) {
+            renderSharedActivity();
+          }
+        })();
+
+        chatRefreshInFlight = refreshPromise;
+        try {
+          await refreshPromise;
+        } finally {
+          if (chatRefreshInFlight === refreshPromise) {
+            chatRefreshInFlight = null;
+          }
+        }
+      }
+
+      function hasSharedRemoteActivity() {
+        return (
+          pendingSessionChatId !== null ||
+          Object.keys(sharedActivityByChat).length > 0
+        );
+      }
+
+      function shouldRunFallbackRefresh() {
+        if (document.visibilityState !== "visible") {
+          return false;
+        }
+
+        const now = Date.now();
+        if (chatRefreshInFlight || now - lastChatRefreshAt < CHAT_REFRESH_COOLDOWN_MS) {
+          return false;
+        }
+
+        const sseHealthy =
+          chatEventSource && now - lastChatEventAt <= CHAT_EVENT_STALE_MS;
+
+        if (!chatEventSource || !sseHealthy) {
+          return now - lastChatRefreshAt >= CHAT_DISCONNECTED_POLL_MS;
+        }
+
+        if (hasSharedRemoteActivity()) {
+          return now - lastChatRefreshAt >= CHAT_REMOTE_ACTIVITY_POLL_MS;
+        }
+
+        return now - lastChatRefreshAt >= CHAT_VISIBLE_STALE_POLL_MS;
+      }
+
+      function maybeRefreshChatsWithFallback() {
+        if (!shouldRunFallbackRefresh()) {
           return;
         }
-        if (activeChatId !== null && chats.some((c) => c.id === activeChatId)) {
-          renderSharedActivity();
-        }
+        refreshChatsWithFallback().catch((e) => {
+          console.error("Fallback chat refresh failed:", e);
+        });
       }
 
       async function selectChat(id) {
@@ -884,16 +949,20 @@
       }
 
       setInterval(() => {
-        if (!chatEventSource || Date.now() - lastChatEventAt > 30000) {
+        if (!chatEventSource || Date.now() - lastChatEventAt > CHAT_EVENT_STALE_MS) {
           connectChatEvents();
         }
-      }, 5000);
+      }, CHAT_RECONNECT_CHECK_MS);
 
       setInterval(() => {
-        refreshChatsWithFallback().catch((e) => {
-          console.error("Fallback chat refresh failed:", e);
-        });
-      }, 3000);
+        maybeRefreshChatsWithFallback();
+      }, 1000);
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          maybeRefreshChatsWithFallback();
+        }
+      });
 
       function updateChatTitle(id, title) {
         const chat = chats.find((c) => c.id === id);
