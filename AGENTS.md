@@ -100,7 +100,7 @@ DB path: `DATABASE_URL` env var (default `data/chat.db`).
 - Models that don't support tools (like gemma2) will error on `/api/chat` with tools — the auto-retry handles this
 - `OllamaChatMessage.content` uses a custom deserializer to handle `null` from Ollama (models return null content when issuing tool calls)
 - The TUI uses crossterm raw mode + alternate screen; panics in the TUI loop will leave the terminal in a broken state (run `reset` to fix)
-- On systems without a CJK-capable monospace terminal font, the default interactive CLI auto-falls back to plain mode; `--tui` and `PJ_FORCE_TUI=1` override that
+- `--plain` is the manual fallback when the fullscreen TUI is a poor fit for terminal font/rendering behavior
 - Web UI Chinese rendering depends on the bundled local `Noto Sans CJK SC` font in `static/fonts/`; CLI Chinese rendering still depends on terminal font support and may require a terminal restart after font installation
 - The tool-enabled flows still support text `<tool_call>` fallback for models without native tool support, so prompt and parser changes can affect both CLI and web
 - Both binaries share `lib.rs` — changes to Ollama types affect both

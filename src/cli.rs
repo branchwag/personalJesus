@@ -8,9 +8,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use std::env;
 use std::io::{self, stdout, Write};
-use std::process::Command;
 use tokio::sync::mpsc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -52,47 +50,6 @@ fn truncate_display_width(text: &str, max_width: usize) -> String {
         width += ch_width;
     }
     result
-}
-
-fn terminal_font_supports_cjk() -> bool {
-    let output = Command::new("fc-list")
-        .args([
-            ":spacing=100",
-            "family",
-        ])
-        .output();
-
-    let Ok(output) = output else {
-        return true;
-    };
-    if !output.status.success() {
-        return true;
-    }
-
-    let families = String::from_utf8_lossy(&output.stdout).to_lowercase();
-    [
-        "noto sans mono cjk",
-        "noto sans cjk",
-        "source han mono",
-        "source han sans",
-        "wenquanyi",
-        "microsoft yahei",
-        "pingfang",
-        "hiragino",
-        "sarasa",
-        "droid sans fallback",
-        "unifont",
-    ]
-    .iter()
-    .any(|name| families.contains(name))
-}
-
-fn should_auto_fallback_to_plain() -> bool {
-    if env::var("PJ_FORCE_TUI").ok().as_deref() == Some("1") {
-        return false;
-    }
-
-    !terminal_font_supports_cjk()
 }
 
 #[derive(PartialEq)]
@@ -1025,10 +982,7 @@ async fn main() {
         let question = args[1..].join(" ");
         run_one_shot(&pool, &question).await;
     } else {
-        if should_auto_fallback_to_plain() {
-            eprintln!("No CJK-capable monospace terminal font detected. Starting plain mode. Use `pj --tui` or `PJ_FORCE_TUI=1` to force the fullscreen UI.");
-            run_plain_loop(&pool).await;
-        } else if let Err(e) = run_tui(pool) {
+        if let Err(e) = run_tui(pool) {
             eprintln!("TUI error: {e}");
             let _ = restore_terminal();
         }
