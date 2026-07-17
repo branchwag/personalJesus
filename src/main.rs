@@ -113,10 +113,7 @@ async fn handle_chat(
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .unwrap();
+    let client = shared_ollama_http_client();
     let request = OllamaRequest {
         model,
         prompt: message,

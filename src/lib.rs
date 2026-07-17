@@ -9,7 +9,7 @@ use std::io::Read;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
 
 pub mod tools;
@@ -347,12 +347,24 @@ pub fn update_title_from_message(
     Ok(())
 }
 
+fn build_ollama_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("Failed to build Ollama HTTP client")
+}
+
+pub fn shared_ollama_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(build_ollama_http_client)
+}
+
 pub async fn query_ollama(
     ollama_url: &str,
     model: &str,
     prompt: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = shared_ollama_http_client();
     let request = OllamaRequest {
         model: model.to_string(),
         prompt: prompt.to_string(),
@@ -509,10 +521,7 @@ pub async fn chat_with_ollama(
     messages: Vec<OllamaChatMessage>,
     tools: Option<Vec<tools::ToolDefinition>>,
 ) -> Result<OllamaChatResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| format!("Failed to build reqwest client: {e}"))?;
+    let client = shared_ollama_http_client();
 
     let url = format!("{}/api/chat", ollama_url);
     let requested_tools = tools.clone();
