@@ -442,6 +442,28 @@
 
       let pendingSessionId = null;
       let pendingToolCalls = [];
+      let pendingSessionChatId = null;
+
+      function isActiveChatLoading() {
+        return isLoading && activeChatId !== null && activeChatId === loadingChatId;
+      }
+
+      function syncComposerState() {
+        const awaitingToolDecision =
+          pendingSessionId !== null &&
+          pendingSessionChatId !== null &&
+          pendingSessionChatId === activeChatId;
+        sendButton.disabled = isLoading;
+        messageInput.disabled = awaitingToolDecision;
+      }
+
+      function clearPendingStateForChat(chatId) {
+        if (pendingSessionChatId === chatId) {
+          pendingSessionId = null;
+          pendingToolCalls = [];
+          pendingSessionChatId = null;
+        }
+      }
 
       function formatTime(dateStr) {
         const d = new Date(dateStr + "Z");
@@ -590,11 +612,11 @@
 
       async function selectChat(id) {
         activeChatId = id;
-        pendingSessionId = null;
-        pendingToolCalls = [];
+        toolModal.classList.remove("visible");
+        pathInputs = [];
         renderChatList();
         chatContainer.innerHTML = "";
-        messageInput.disabled = false;
+        syncComposerState();
         messageInput.focus();
 
         try {
@@ -609,6 +631,13 @@
           }
           if (messages.length === 0 && loadingChatId !== id) {
             showEmptyState();
+          }
+          if (
+            pendingSessionId &&
+            pendingSessionChatId === id &&
+            !isLoading
+          ) {
+            showToolModal(pendingToolCalls, pendingSessionId, id);
           }
         } catch (e) {
           console.error("Failed to load messages:", e);
@@ -625,13 +654,13 @@
           }
           chats = chats.filter((c) => c.id !== id);
           if (activeChatId === id) {
+            clearPendingStateForChat(id);
             activeChatId = null;
-            pendingSessionId = null;
-            pendingToolCalls = [];
             chatContainer.innerHTML = "";
             showEmptyState();
           }
           renderChatList();
+          syncComposerState();
         } catch (e) {
           console.error("Failed to delete chat:", e);
         }
@@ -649,6 +678,31 @@
         }
       }
 
+      function connectChatEvents() {
+        const eventSource = new EventSource("/api/events");
+
+        eventSource.onmessage = async (event) => {
+          try {
+            const change = JSON.parse(event.data);
+            if (change.Deleted && activeChatId === change.Deleted.id) {
+              clearPendingStateForChat(change.Deleted.id);
+              activeChatId = null;
+              chatContainer.innerHTML = "";
+              showEmptyState();
+            }
+            await loadChats();
+            syncComposerState();
+          } catch (e) {
+            console.error("Failed to handle chat event:", e);
+          }
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+          setTimeout(connectChatEvents, 2000);
+        };
+      }
+
       function updateChatTitle(id, title) {
         const chat = chats.find((c) => c.id === id);
         if (chat && chat.title === "New Chat") {
@@ -659,9 +713,10 @@
 
       let pathInputs = [];
 
-      function showToolModal(toolCalls, sessionId) {
+      function showToolModal(toolCalls, sessionId, chatId = activeChatId) {
         pendingToolCalls = toolCalls;
         pendingSessionId = sessionId;
+        pendingSessionChatId = chatId;
         toolCallsList.innerHTML = "";
         pathInputs = [];
 
@@ -728,46 +783,59 @@
           await createNewChat();
         }
 
+        const requestChatId = activeChatId;
+
         addMessage(message, "user");
         messageInput.value = "";
-        updateChatTitle(activeChatId, message.length > 50 ? message.substring(0, 50) + "..." : message);
+        updateChatTitle(requestChatId, message.length > 50 ? message.substring(0, 50) + "..." : message);
 
         isLoading = true;
-        loadingChatId = activeChatId;
-        sendButton.disabled = true;
+        loadingChatId = requestChatId;
+        syncComposerState();
         addLoadingMessage();
 
         try {
           const response = await fetch("/api/chat/tools", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: activeChatId, message }),
+            body: JSON.stringify({ chat_id: requestChatId, message }),
           });
 
           const data = await response.json();
-          document.getElementById("loadingMessage")?.remove();
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+          }
 
           if (!response.ok) {
-            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            if (activeChatId === requestChatId) {
+              addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            }
           } else if (data.type === "text") {
-            activeChatId = data.chat_id;
             if (!chats.find(c => c.id === data.chat_id)) {
               await loadChats();
             }
-            if (data.content) {
+            if (data.content && activeChatId === requestChatId) {
               addMessage(data.content, "assistant");
             }
           } else if (data.type === "tool_calls") {
-            showToolModal(data.tool_calls, data.session_id);
+            if (activeChatId === requestChatId) {
+              showToolModal(data.tool_calls, data.session_id, requestChatId);
+            } else {
+              pendingToolCalls = data.tool_calls;
+              pendingSessionId = data.session_id;
+              pendingSessionChatId = requestChatId;
+            }
           }
         } catch (error) {
           console.error("Error:", error);
-          document.getElementById("loadingMessage")?.remove();
-          addMessage("Sorry, there was an error processing your request.", "assistant");
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+            addMessage("Sorry, there was an error processing your request.", "assistant");
+          }
         } finally {
           isLoading = false;
           loadingChatId = null;
-          sendButton.disabled = false;
+          syncComposerState();
           messageInput.focus();
         }
       }
@@ -777,7 +845,8 @@
       }
 
       async function handleToolConfirm() {
-        if (!pendingSessionId) return;
+        if (!pendingSessionId || pendingSessionChatId !== activeChatId) return;
+        const requestChatId = pendingSessionChatId;
 
         const modified = [];
         for (const pi of pathInputs) {
@@ -788,8 +857,8 @@
 
         toolModal.classList.remove("visible");
         isLoading = true;
-        loadingChatId = activeChatId;
-        sendButton.disabled = true;
+        loadingChatId = requestChatId;
+        syncComposerState();
         addLoadingMessage();
 
         try {
@@ -804,39 +873,53 @@
           });
 
           const data = await response.json();
-          document.getElementById("loadingMessage")?.remove();
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+          }
           pendingSessionId = null;
           pendingToolCalls = [];
+          pendingSessionChatId = null;
           pathInputs = [];
 
           if (!response.ok) {
-            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            if (activeChatId === requestChatId) {
+              addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            }
           } else if (data.type === "text") {
-            if (data.content) {
+            if (data.content && activeChatId === requestChatId) {
               addMessage(data.content, "assistant");
             }
           } else if (data.type === "tool_calls") {
-            showToolModal(data.tool_calls, data.session_id);
+            if (activeChatId === requestChatId) {
+              showToolModal(data.tool_calls, data.session_id, requestChatId);
+            } else {
+              pendingToolCalls = data.tool_calls;
+              pendingSessionId = data.session_id;
+              pendingSessionChatId = requestChatId;
+            }
           }
         } catch (error) {
           console.error("Error:", error);
-          document.getElementById("loadingMessage")?.remove();
-          addMessage("Sorry, there was an error processing your request.", "assistant");
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+            addMessage("Sorry, there was an error processing your request.", "assistant");
+          }
         } finally {
           isLoading = false;
           loadingChatId = null;
-          sendButton.disabled = false;
+          syncComposerState();
           messageInput.focus();
         }
       }
 
       async function handleToolDeny() {
-        if (!pendingSessionId) return;
+        if (!pendingSessionId || pendingSessionChatId !== activeChatId) return;
+        const requestChatId = pendingSessionChatId;
 
         toolModal.classList.remove("visible");
         isLoading = true;
-        loadingChatId = activeChatId;
-        sendButton.disabled = true;
+        loadingChatId = requestChatId;
+        syncComposerState();
         addLoadingMessage();
 
         try {
@@ -847,27 +930,40 @@
           });
 
           const data = await response.json();
-          document.getElementById("loadingMessage")?.remove();
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+          }
           pendingSessionId = null;
           pendingToolCalls = [];
+          pendingSessionChatId = null;
 
           if (!response.ok) {
-            addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            if (activeChatId === requestChatId) {
+              addMessage("Error: " + (data.error || "Unknown server error"), "assistant");
+            }
           } else if (data.type === "text") {
-            if (data.content) {
+            if (data.content && activeChatId === requestChatId) {
               addMessage(data.content, "assistant");
             }
           } else if (data.type === "tool_calls") {
-            showToolModal(data.tool_calls, data.session_id);
+            if (activeChatId === requestChatId) {
+              showToolModal(data.tool_calls, data.session_id, requestChatId);
+            } else {
+              pendingToolCalls = data.tool_calls;
+              pendingSessionId = data.session_id;
+              pendingSessionChatId = requestChatId;
+            }
           }
         } catch (error) {
           console.error("Error:", error);
-          document.getElementById("loadingMessage")?.remove();
-          addMessage("Sorry, there was an error processing your request.", "assistant");
+          if (activeChatId === requestChatId) {
+            document.getElementById("loadingMessage")?.remove();
+            addMessage("Sorry, there was an error processing your request.", "assistant");
+          }
         } finally {
           isLoading = false;
           loadingChatId = null;
-          sendButton.disabled = false;
+          syncComposerState();
           messageInput.focus();
         }
       }
@@ -890,6 +986,7 @@
       });
 
       loadChats();
+      connectChatEvents();
       messageInput.focus();
     </script>
   </body>

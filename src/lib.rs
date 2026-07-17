@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::io::Read;
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ChatChange {
+    Upsert { id: i64 },
     Deleted { id: i64 },
 }
 
@@ -49,28 +51,61 @@ pub fn start_event_server() -> broadcast::Sender<ChatChange> {
                 Err(_) => continue,
             };
             let mut rx = tx2.subscribe();
+            let tx3 = tx2.clone();
             tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
                 use tokio::io::AsyncWriteExt;
-                let (_reader, mut writer) = tokio::io::split(stream);
+                let (reader, mut writer) = tokio::io::split(stream);
+                let writer_task = tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(change) => {
+                                let mut msg =
+                                    serde_json::to_string(&change).unwrap_or_default();
+                                msg.push('\n');
+                                if writer.write_all(msg.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                });
+
+                let mut reader = tokio::io::BufReader::new(reader);
+                let mut line = String::new();
                 loop {
-                    match rx.recv().await {
-                        Ok(change) => {
-                            let mut msg =
-                                serde_json::to_string(&change).unwrap_or_default();
-                            msg.push('\n');
-                            if writer.write_all(msg.as_bytes()).await.is_err() {
-                                break;
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Ok(change) = serde_json::from_str::<ChatChange>(line.trim_end())
+                            {
+                                let _ = tx3.send(change);
                             }
                         }
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,
                     }
                 }
+                writer_task.abort();
             });
         }
     });
 
     tx
+}
+
+pub fn publish_chat_change(change: &ChatChange) -> Result<(), String> {
+    let path = socket_path();
+    let mut stream = UnixStream::connect(&path)
+        .map_err(|e| format!("Failed to connect to event socket {}: {e}", path.display()))?;
+    let mut msg = serde_json::to_string(change).map_err(|e| format!("Serialize event: {e}"))?;
+    msg.push('\n');
+    stream
+        .write_all(msg.as_bytes())
+        .map_err(|e| format!("Failed to publish event: {e}"))?;
+    Ok(())
 }
 
 pub fn socket_inode(path: &std::path::Path) -> Option<u64> {

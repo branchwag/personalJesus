@@ -27,12 +27,16 @@ async fn handle_list_chats(pool: web::Data<DbPool>) -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(chats))
 }
 
-async fn handle_create_chat(pool: web::Data<DbPool>) -> Result<HttpResponse> {
+async fn handle_create_chat(
+    pool: web::Data<DbPool>,
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
+) -> Result<HttpResponse> {
     let pool = pool.get_ref().clone();
     let chat = web::block(move || create_chat(&pool))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Upsert { id: chat.id });
     Ok(HttpResponse::Ok().json(chat))
 }
 
@@ -64,6 +68,7 @@ async fn handle_get_messages(path: web::Path<i64>, pool: web::Data<DbPool>) -> R
 async fn handle_chat(
     req: web::Json<ChatRequest>,
     pool: web::Data<DbPool>,
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "gemma2:9b");
@@ -94,6 +99,7 @@ async fn handle_chat(
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
 
     let pool_c = pool.clone();
     let msg_c = message.clone();
@@ -218,6 +224,7 @@ async fn handle_tool_chat(
     req: web::Json<ToolChatRequest>,
     pool: web::Data<DbPool>,
     sessions: web::Data<SessionMap>,
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
 ) -> Result<HttpResponse> {
     let ollama_url = get_env_or("OLLAMA_URL", "http://localhost:11434");
     let model = get_env_or("MODEL_NAME", "gemma2:9b");
@@ -245,6 +252,7 @@ async fn handle_tool_chat(
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
 
     let pool_c = pool.clone();
     let msg = message.clone();
@@ -481,6 +489,38 @@ async fn handle_write_file(req: web::Json<WriteFileRequest>) -> Result<HttpRespo
     Ok(HttpResponse::Ok().json(serde_json::json!({"ok": true, "path": path, "bytes": req.content.len()})))
 }
 
+async fn handle_events(
+    event_tx: web::Data<broadcast::Sender<ChatChange>>,
+) -> Result<HttpResponse> {
+    let mut rx = event_tx.subscribe();
+    let (tx, rx_stream) = mpsc::unbounded_channel::<web::Bytes>();
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(change) => {
+                    let payload = serde_json::to_string(&change).unwrap_or_default();
+                    let event = format!("data: {payload}\n\n");
+                    if tx.send(web::Bytes::from(event)).is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(HttpResponse::Ok()
+        .insert_header(("Content-Type", "text/event-stream"))
+        .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("Connection", "keep-alive"))
+        .streaming(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(rx_stream)
+                .map(|b| Ok::<_, std::io::Error>(b)),
+        ))
+}
+
 async fn health() -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "ok"})))
 }
@@ -523,6 +563,7 @@ async fn main() -> std::io::Result<()> {
             .route("/api/chats", web::get().to(handle_list_chats))
             .route("/api/chats/{id}", web::delete().to(handle_delete_chat))
             .route("/api/chats/{id}/messages", web::get().to(handle_get_messages))
+            .route("/api/events", web::get().to(handle_events))
             .route("/api/write-file", web::post().to(handle_write_file))
             .route("/health", web::get().to(health))
             .service(fs::Files::new("/", "./static").index_file("index.html"))

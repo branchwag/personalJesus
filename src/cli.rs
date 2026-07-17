@@ -44,9 +44,13 @@ enum Focus {
 }
 
 enum CliEvent {
-    TextReady,
-    ToolCalls(Vec<ToolCall>, Vec<OllamaChatMessage>),
-    Error(String),
+    TextReady { chat_id: i64 },
+    ToolCalls {
+        chat_id: i64,
+        tool_calls: Vec<ToolCall>,
+        messages: Vec<OllamaChatMessage>,
+    },
+    Error { chat_id: i64, message: String },
 }
 
 struct App {
@@ -55,6 +59,7 @@ struct App {
     active_chat_id: Option<i64>,
     input: String,
     loading: bool,
+    loading_chat_id: Option<i64>,
     sidebar_index: usize,
     focus: Focus,
     scroll: u16,
@@ -64,7 +69,7 @@ struct App {
     model: String,
     tx: mpsc::UnboundedSender<CliEvent>,
     rx: mpsc::UnboundedReceiver<CliEvent>,
-    pending_tool_calls: Option<(Vec<ToolCall>, Vec<OllamaChatMessage>)>,
+    pending_tool_calls: Option<(i64, Vec<ToolCall>, Vec<OllamaChatMessage>)>,
     waiting_confirmation: bool,
     event_client: Option<EventClient>,
 }
@@ -80,6 +85,7 @@ impl App {
             active_chat_id: None,
             input: String::new(),
             loading: false,
+            loading_chat_id: None,
             sidebar_index: 0,
             focus: Focus::Input,
             scroll: 0,
@@ -113,6 +119,17 @@ impl App {
         self.scroll = 0;
     }
 
+    fn is_active_chat_loading(&self) -> bool {
+        self.loading && self.loading_chat_id == self.active_chat_id
+    }
+
+    fn has_pending_confirmation_for_active_chat(&self) -> bool {
+        matches!(
+            self.pending_tool_calls,
+            Some((chat_id, _, _)) if Some(chat_id) == self.active_chat_id
+        )
+    }
+
     fn select_chat(&mut self, index: usize) {
         if index < self.chats.len() {
             self.active_chat_id = Some(self.chats[index].id);
@@ -123,6 +140,7 @@ impl App {
 
     fn new_chat(&mut self) {
         if let Ok(chat) = create_chat(&self.pool) {
+            let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
             self.load_chats();
             self.sidebar_index = 0;
             self.active_chat_id = Some(chat.id);
@@ -153,9 +171,11 @@ impl App {
 
         let _ = update_title_from_message(&self.pool, chat_id, &message);
         let _ = add_message(&self.pool, chat_id, "user", &message);
+        let _ = publish_chat_change(&ChatChange::Upsert { id: chat_id });
         self.load_messages();
 
         self.loading = true;
+        self.loading_chat_id = Some(chat_id);
         let pool = self.pool.clone();
         let ollama_url = self.ollama_url.clone();
         let model = self.model.clone();
@@ -181,7 +201,10 @@ impl App {
             match build_messages_from_db(&pool, chat_id) {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = tx.send(CliEvent::Error(e));
+                    let _ = tx.send(CliEvent::Error {
+                        chat_id,
+                        message: e,
+                    });
                     return;
                 }
             }
@@ -214,7 +237,7 @@ impl App {
                 }
 
                 if tool_calls.is_empty() {
-                    let _ = tx.send(CliEvent::TextReady);
+                    let _ = tx.send(CliEvent::TextReady { chat_id });
                 } else {
                     let mut context = msgs;
                     context.push(OllamaChatMessage {
@@ -223,22 +246,30 @@ impl App {
                         tool_calls: Some(tool_calls.clone()),
                         name: None,
                     });
-                    let _ = tx.send(CliEvent::ToolCalls(tool_calls, context));
+                    let _ = tx.send(CliEvent::ToolCalls {
+                        chat_id,
+                        tool_calls,
+                        messages: context,
+                    });
                 }
             }
             Err(e) => {
-                let _ = tx.send(CliEvent::Error(e));
+                let _ = tx.send(CliEvent::Error {
+                    chat_id,
+                    message: e,
+                });
             }
         }
     }
 
     fn confirm_tool(&mut self) {
-        let (tool_calls, messages) = match self.pending_tool_calls.take() {
+        let (chat_id, tool_calls, messages) = match self.pending_tool_calls.take() {
             Some(v) => v,
             None => return,
         };
         self.waiting_confirmation = false;
         self.loading = true;
+        self.loading_chat_id = Some(chat_id);
 
         let mut extra = messages;
         for tc in &tool_calls {
@@ -257,7 +288,6 @@ impl App {
         let pool = self.pool.clone();
         let ollama_url = self.ollama_url.clone();
         let model = self.model.clone();
-        let chat_id = self.active_chat_id.unwrap();
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
@@ -266,12 +296,13 @@ impl App {
     }
 
     fn deny_tool(&mut self) {
-        let (_tool_calls, messages) = match self.pending_tool_calls.take() {
+        let (chat_id, _tool_calls, messages) = match self.pending_tool_calls.take() {
             Some(v) => v,
             None => return,
         };
         self.waiting_confirmation = false;
         self.loading = true;
+        self.loading_chat_id = Some(chat_id);
 
         let mut extra = messages;
         extra.push(OllamaChatMessage {
@@ -286,7 +317,6 @@ impl App {
         let pool = self.pool.clone();
         let ollama_url = self.ollama_url.clone();
         let model = self.model.clone();
-        let chat_id = self.active_chat_id.unwrap();
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
@@ -381,7 +411,11 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.messages.is_empty() && app.active_chat_id.is_some() && !app.loading && !app.waiting_confirmation {
+    if app.messages.is_empty()
+        && app.active_chat_id.is_some()
+        && !app.is_active_chat_loading()
+        && !app.has_pending_confirmation_for_active_chat()
+    {
         let empty = Paragraph::new("No messages yet. Type below to start chatting.")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().title(title).borders(Borders::ALL));
@@ -406,13 +440,13 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(""));
         }
 
-        if app.waiting_confirmation {
+        if app.has_pending_confirmation_for_active_chat() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "━━━ AI wants to use tools ━━━",
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )));
-            if let Some((tool_calls, _)) = &app.pending_tool_calls {
+            if let Some((_, tool_calls, _)) = &app.pending_tool_calls {
                 for tc in tool_calls {
                     for line in tools::tool_call_description(tc).lines() {
                         lines.push(Line::from(Span::styled(
@@ -429,7 +463,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
             )));
         }
 
-        if app.loading {
+        if app.is_active_chat_loading() {
             lines.push(Line::from(Span::styled(
                 "[AI] Thinking...",
                 Style::default().fg(Color::Yellow),
@@ -559,22 +593,36 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
 
         if let Ok(event) = app.rx.try_recv() {
             match event {
-                CliEvent::TextReady => {
+                CliEvent::TextReady { chat_id } => {
                     app.loading = false;
-                    app.load_messages();
+                    app.loading_chat_id = None;
+                    if app.active_chat_id == Some(chat_id) {
+                        app.load_messages();
+                    }
                 }
-                CliEvent::ToolCalls(tcs, msgs) => {
+                CliEvent::ToolCalls {
+                    chat_id,
+                    tool_calls,
+                    messages,
+                } => {
                     app.loading = false;
-                    app.load_messages();
-                    app.pending_tool_calls = Some((tcs, msgs));
+                    app.loading_chat_id = None;
+                    if app.active_chat_id == Some(chat_id) {
+                        app.load_messages();
+                    }
+                    app.pending_tool_calls = Some((chat_id, tool_calls, messages));
                     app.waiting_confirmation = true;
                 }
-                CliEvent::Error(e) => {
+                CliEvent::Error { chat_id, message } => {
                     app.loading = false;
-                    let _ = add_message(&app.pool, app.active_chat_id.unwrap_or(0), "assistant", &format!("Error: {e}"));
-                    app.load_messages();
+                    app.loading_chat_id = None;
+                    let _ = add_message(&app.pool, chat_id, "assistant", &format!("Error: {message}"));
+                    if app.active_chat_id == Some(chat_id) {
+                        app.load_messages();
+                    }
                 }
             }
+            app.waiting_confirmation = app.pending_tool_calls.is_some();
         }
 
         let mut socket_events = Vec::new();
@@ -603,10 +651,14 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
         }
         if !socket_events.is_empty() {
             for ev in &socket_events {
-                let ChatChange::Deleted { id } = ev;
-                if app.active_chat_id == Some(*id) {
-                    app.active_chat_id = None;
-                    app.messages = vec![];
+                match ev {
+                    ChatChange::Deleted { id } => {
+                        if app.active_chat_id == Some(*id) {
+                            app.active_chat_id = None;
+                            app.messages = vec![];
+                        }
+                    }
+                    ChatChange::Upsert { .. } => {}
                 }
             }
             app.load_chats();
@@ -640,7 +692,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                     continue;
                 }
 
-                if app.waiting_confirmation {
+                if app.has_pending_confirmation_for_active_chat() {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             app.confirm_tool();
@@ -679,6 +731,7 @@ fn handle_sidebar_key(app: &mut App, key: KeyEvent) {
             if !app.chats.is_empty() && app.chats.len() > app.sidebar_index {
                 let id = app.chats[app.sidebar_index].id;
                 let _ = delete_chat(&app.pool, id);
+                let _ = publish_chat_change(&ChatChange::Deleted { id });
                 if app.active_chat_id == Some(id) {
                     app.active_chat_id = None;
                     app.messages = vec![];
@@ -716,9 +769,11 @@ async fn run_one_shot(pool: &DbPool, question: &str) {
         Ok(c) => c,
         Err(e) => { eprintln!("Error: {e}"); return; }
     };
+    let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
 
     let _ = update_title_from_message(pool, chat.id, question);
     let _ = add_message(pool, chat.id, "user", question);
+    let _ = publish_chat_change(&ChatChange::Upsert { id: chat.id });
 
     println!("You: {question}");
     print!("AI: ");
