@@ -29,7 +29,9 @@ cargo run --release --bin pj -- "your question here"
 cargo check
 ```
 
-There are no unit tests. `cargo check` is the verification step.
+There are no unit tests. `cargo check` is the minimum verification step.
+
+Agent workflow note: after every code change, run `cargo check`, `cargo clippy`, and `cargo build --release` so linting, compilation, and user-testable binaries are all covered before handoff.
 
 ## Architecture
 

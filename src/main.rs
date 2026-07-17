@@ -24,7 +24,7 @@ async fn handle_list_chats(pool: web::Data<DbPool>) -> Result<HttpResponse> {
     let chats = web::block(move || list_chats(&pool))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     Ok(HttpResponse::Ok()
         .insert_header(("Cache-Control", "no-store"))
         .json(chats))
@@ -38,7 +38,7 @@ async fn handle_create_chat(
     let chat = web::block(move || create_chat(&pool))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Upsert { id: chat.id });
     Ok(HttpResponse::Ok().json(chat))
 }
@@ -53,7 +53,7 @@ async fn handle_delete_chat(
     web::block(move || delete_chat(&pool, id))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Deleted { id });
     Ok(HttpResponse::Ok().json(serde_json::json!({"ok": true})))
 }
@@ -64,7 +64,7 @@ async fn handle_get_messages(path: web::Path<i64>, pool: web::Data<DbPool>) -> R
     let messages = web::block(move || get_messages(&pool, id))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     Ok(HttpResponse::Ok()
         .insert_header(("Cache-Control", "no-store"))
         .json(messages))
@@ -103,7 +103,7 @@ async fn handle_chat(
     web::block(move || update_title_from_message(&pool_clone, chat_id, &msg))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
 
     let pool_c = pool.clone();
@@ -111,7 +111,7 @@ async fn handle_chat(
     web::block(move || add_message(&pool_c, chat_id, "user", &msg_c))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Activity {
         id: chat_id,
         state: ChatActivityState::Thinking,
@@ -188,7 +188,7 @@ async fn handle_chat(
                 .content_type("text/plain; charset=utf-8")
                 .streaming(
                     tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
-                        .map(|b| Ok::<_, std::io::Error>(b)),
+                        .map(Ok::<_, std::io::Error>),
                 ))
         }
         Err(e) => {
@@ -267,7 +267,7 @@ async fn handle_tool_chat(
     web::block(move || update_title_from_message(&pool_c, chat_id, &msg))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
 
     let pool_c = pool.clone();
@@ -275,13 +275,13 @@ async fn handle_tool_chat(
     web::block(move || add_message(&pool_c, chat_id, "user", &msg))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
     let pool_db = pool.clone();
     let all_msgs = web::block(move || build_messages_from_db(&pool_db, chat_id))
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let _ = event_tx.send(ChatChange::Activity {
         id: chat_id,
         state: ChatActivityState::Thinking,
@@ -307,7 +307,7 @@ async fn handle_tool_chat(
                 web::block(move || add_message(&pool_s, chat_id, "assistant", &ct))
                     .await
                     .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                    .map_err(actix_web::error::ErrorInternalServerError)?;
                 let _ = event_tx.send(ChatChange::Upsert { id: chat_id });
             }
 
@@ -410,10 +410,10 @@ async fn handle_tool_confirm(
     let mut tool_calls = all_tool_calls;
     if let Some(ref paths) = req.modified_paths {
         for mp in paths {
-            if mp.index < tool_calls.len() {
-                if let Some(args) = tool_calls[mp.index].function.arguments.as_object_mut() {
-                    args.insert("path".to_string(), serde_json::Value::String(mp.path.clone()));
-                }
+            if mp.index < tool_calls.len()
+                && let Some(args) = tool_calls[mp.index].function.arguments.as_object_mut()
+            {
+                args.insert("path".to_string(), serde_json::Value::String(mp.path.clone()));
             }
         }
     }
@@ -466,7 +466,7 @@ async fn handle_tool_confirm(
                 web::block(move || add_message(&pool_s, state.chat_id, "assistant", &ct))
                     .await
                     .map_err(|e| actix_web::error::ErrorInternalServerError(format!("DB: {e}")))?
-                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                    .map_err(actix_web::error::ErrorInternalServerError)?;
                 let _ = event_tx.send(ChatChange::Upsert { id: state.chat_id });
             }
 
@@ -579,7 +579,7 @@ async fn handle_events(
         .insert_header(("Connection", "keep-alive"))
         .streaming(
             tokio_stream::wrappers::UnboundedReceiverStream::new(rx_stream)
-                .map(|b| Ok::<_, std::io::Error>(b)),
+                .map(Ok::<_, std::io::Error>),
         ))
 }
 

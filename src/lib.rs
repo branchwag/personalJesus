@@ -212,10 +212,10 @@ pub struct MessageOut {
 }
 
 pub fn create_pool(database_url: &str) -> DbPool {
-    if let Some(parent) = std::path::Path::new(database_url).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).ok();
-        }
+    if let Some(parent) = std::path::Path::new(database_url).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).ok();
     }
     let manager = SqliteConnectionManager::file(database_url);
     Pool::builder()
@@ -482,8 +482,7 @@ fn response_claims_file_change_without_tool_call(content: &str) -> bool {
 }
 
 pub fn get_coding_system_prompt() -> String {
-    format!(
-        "You are a coding assistant with direct filesystem access via tools. \
+    "You are a coding assistant with direct filesystem access via tools. \
         You MUST use your tools to create and edit files — never describe or show code.\n\n\
         AVAILABLE TOOLS:\n\
         - write_file(path, content): Create a new file (IMMEDIATELY creates it)\n\
@@ -508,7 +507,7 @@ pub fn get_coding_system_prompt() -> String {
         NEVER use the user's project directory unless the user explicitly specifies a different path.\n\
         7. Always use absolute paths.\n\n\
         FAILURE MODE: If you output code or descriptions instead of calling tools, you are failing at your job."
-    )
+        .to_string()
 }
 
 pub fn build_messages_from_db(pool: &DbPool, chat_id: i64) -> Result<Vec<OllamaChatMessage>, String> {

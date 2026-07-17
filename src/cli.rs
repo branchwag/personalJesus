@@ -78,6 +78,7 @@ struct App {
     sidebar_index: usize,
     focus: Focus,
     scroll: u16,
+    confirmation_scroll: u16,
     exit: bool,
     pool: DbPool,
     ollama_url: String,
@@ -104,6 +105,7 @@ impl App {
             sidebar_index: 0,
             focus: Focus::Input,
             scroll: 0,
+            confirmation_scroll: 0,
             exit: false,
             pool,
             ollama_url,
@@ -143,6 +145,16 @@ impl App {
             self.pending_tool_calls,
             Some((chat_id, _, _)) if Some(chat_id) == self.active_chat_id
         )
+    }
+
+    fn confirmation_line_count(&self) -> usize {
+        match &self.pending_tool_calls {
+            Some((_, tool_calls, _)) => tool_calls
+                .iter()
+                .map(|tc| tools::tool_call_description(tc).lines().count() + 1)
+                .sum(),
+            None => 0,
+        }
     }
 
     fn select_chat(&mut self, index: usize) {
@@ -420,10 +432,61 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(help, chunks[1]);
 }
 
-fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_confirmation_panel(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(7)])
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(area);
+
+    let mut lines = vec![Line::from(Span::styled(
+        "AI wants to use tools",
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    ))];
+
+    if let Some((_, tool_calls, _)) = &app.pending_tool_calls {
+        for tc in tool_calls {
+            lines.push(Line::from(""));
+            for line in tools::tool_call_description(tc).lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+        }
+    }
+
+    let details = Paragraph::new(Text::from(lines))
+        .block(Block::default().title(" Tool Approval ").borders(Borders::ALL))
+        .wrap(Wrap { trim: false })
+        .scroll((app.confirmation_scroll, 0));
+    frame.render_widget(details, chunks[0]);
+
+    let actions = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "[y] accept",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "[n] deny",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("[j/k] scroll", Style::default().fg(Color::Yellow)),
+    ]))
+    .block(Block::default().borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM));
+    frame.render_widget(actions, chunks[1]);
+}
+
+fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
+    let waiting_confirmation = app.has_pending_confirmation_for_active_chat();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if waiting_confirmation {
+            [Constraint::Min(1), Constraint::Length(10)]
+        } else {
+            [Constraint::Min(1), Constraint::Length(7)]
+        })
         .split(area);
 
     let title = match app.active_chat_id {
@@ -444,7 +507,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     if app.messages.is_empty()
         && app.active_chat_id.is_some()
         && !app.is_active_chat_loading()
-        && !app.has_pending_confirmation_for_active_chat()
+        && !waiting_confirmation
     {
         let empty = Paragraph::new("No messages yet. Type below to start chatting.")
             .style(Style::default().fg(Color::DarkGray))
@@ -468,29 +531,6 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
             )));
             lines.push(Line::from(strip_code_blocks(&msg.content)));
             lines.push(Line::from(""));
-        }
-
-        if app.has_pending_confirmation_for_active_chat() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "━━━ AI wants to use tools ━━━",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )));
-            if let Some((_, tool_calls, _)) = &app.pending_tool_calls {
-                for tc in tool_calls {
-                    for line in tools::tool_call_description(tc).lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {line}"),
-                            Style::default().fg(Color::Cyan),
-                        )));
-                    }
-                }
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " Execute? (y/N) ",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-            )));
         }
 
         if app.is_active_chat_loading() {
@@ -517,17 +557,25 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let input_text: &str = if app.input.is_empty() {
-        " Type a message..."
+    if waiting_confirmation {
+        draw_confirmation_panel(frame, chunks[1], app);
     } else {
-        app.input.as_str()
-    };
-    let input = Paragraph::new(input_text)
-        .style(input_style)
-        .block(Block::default().title(" Input ").borders(Borders::ALL));
-    frame.render_widget(input, chunks[1]);
+        let input_text: &str = if app.input.is_empty() {
+            " Type a message..."
+        } else {
+            app.input.as_str()
+        };
+        let input = Paragraph::new(input_text)
+            .style(input_style)
+            .block(Block::default().title(" Input ").borders(Borders::ALL));
+        frame.render_widget(input, chunks[1]);
+    }
 
-    if matches!(app.focus, Focus::Input) && chunks[1].width > 2 && chunks[1].height > 2 {
+    if !waiting_confirmation
+        && matches!(app.focus, Focus::Input)
+        && chunks[1].width > 2
+        && chunks[1].height > 2
+    {
         let max_cursor_col = chunks[1].width.saturating_sub(2);
         let input_width = UnicodeWidthStr::width(app.input.as_str()) as u16;
         let cursor_col = (input_width + 1).min(max_cursor_col);
@@ -595,6 +643,8 @@ fn ui(frame: &mut Frame, app: &App, show_help: bool) {
             Span::styled(" pj ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(" Awaiting confirmation ", Style::default().fg(Color::Green)),
+            Span::raw(" "),
+            Span::styled("[y] accept [n] deny [j/k] scroll", Style::default().fg(Color::Yellow)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
@@ -621,7 +671,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
     terminal.clear()?;
 
     while !app.exit {
-        terminal.draw(|f| ui(f, &mut app, show_help))?;
+        terminal.draw(|f| ui(f, &app, show_help))?;
 
         if let Ok(event) = app.rx.try_recv() {
             match event {
@@ -651,6 +701,7 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
                         app.load_messages();
                     }
                     app.pending_tool_calls = Some((chat_id, tool_calls, messages));
+                    app.confirmation_scroll = 0;
                     app.waiting_confirmation = true;
                 }
                 CliEvent::Error { chat_id, message } => {
@@ -710,54 +761,63 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
             app.load_chats();
         }
 
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
 
-                if show_help {
-                    show_help = false;
-                    continue;
-                }
+            if show_help {
+                show_help = false;
+                continue;
+            }
 
+            match key.code {
+                KeyCode::Esc => {
+                    app.exit = true;
+                }
+                KeyCode::Char('q') if matches!(app.focus, Focus::Sidebar) => {
+                    app.exit = true;
+                }
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                    app.exit = true;
+                }
+                KeyCode::Char('?') if app.focus == Focus::Sidebar => {
+                    show_help = !show_help;
+                }
+                _ => {}
+            }
+
+            if show_help {
+                continue;
+            }
+
+            if app.has_pending_confirmation_for_active_chat() {
                 match key.code {
-                    KeyCode::Esc => {
-                        app.exit = true;
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        app.confirm_tool();
                     }
-                    KeyCode::Char('q') if matches!(app.focus, Focus::Sidebar) => {
-                        app.exit = true;
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.deny_tool();
                     }
-                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
-                        app.exit = true;
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.confirmation_scroll = app.confirmation_scroll.saturating_sub(1);
                     }
-                    KeyCode::Char('?') if app.focus == Focus::Sidebar => {
-                        show_help = !show_help;
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max_scroll =
+                            app.confirmation_line_count().saturating_sub(1) as u16;
+                        app.confirmation_scroll =
+                            app.confirmation_scroll.saturating_add(1).min(max_scroll);
                     }
                     _ => {}
                 }
+                continue;
+            }
 
-                if show_help {
-                    continue;
-                }
-
-                if app.has_pending_confirmation_for_active_chat() {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            app.confirm_tool();
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            app.deny_tool();
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                match app.focus {
-                    Focus::Sidebar => handle_sidebar_key(&mut app, key),
-                    Focus::Input => handle_input_key(&mut app, key),
-                }
+            match app.focus {
+                Focus::Sidebar => handle_sidebar_key(&mut app, key),
+                Focus::Input => handle_input_key(&mut app, key),
             }
         }
     }
@@ -768,25 +828,23 @@ fn run_tui(pool: DbPool) -> io::Result<()> {
 
 fn handle_sidebar_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.sidebar_index > 0 { app.sidebar_index -= 1; }
+        KeyCode::Up | KeyCode::Char('k') if app.sidebar_index > 0 => {
+            app.sidebar_index -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.sidebar_index + 1 < app.chats.len() { app.sidebar_index += 1; }
+        KeyCode::Down | KeyCode::Char('j') if app.sidebar_index + 1 < app.chats.len() => {
+            app.sidebar_index += 1;
         }
         KeyCode::Enter => app.select_chat(app.sidebar_index),
         KeyCode::Char('n') => app.new_chat(),
-        KeyCode::Char('d') => {
-            if !app.chats.is_empty() && app.chats.len() > app.sidebar_index {
-                let id = app.chats[app.sidebar_index].id;
-                let _ = delete_chat(&app.pool, id);
-                let _ = publish_chat_change(&ChatChange::Deleted { id });
-                if app.active_chat_id == Some(id) {
-                    app.active_chat_id = None;
-                    app.messages = vec![];
-                }
-                app.load_chats();
+        KeyCode::Char('d') if !app.chats.is_empty() && app.chats.len() > app.sidebar_index => {
+            let id = app.chats[app.sidebar_index].id;
+            let _ = delete_chat(&app.pool, id);
+            let _ = publish_chat_change(&ChatChange::Deleted { id });
+            if app.active_chat_id == Some(id) {
+                app.active_chat_id = None;
+                app.messages = vec![];
             }
+            app.load_chats();
         }
         KeyCode::Tab => app.focus = Focus::Input,
         _ => {}
