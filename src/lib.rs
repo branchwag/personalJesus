@@ -423,6 +423,36 @@ pub struct OllamaChatResponse {
     pub done: bool,
 }
 
+fn extract_tool_calls_from_response(message: &OllamaChatMessage) -> Vec<ToolCall> {
+    let native_tcs = message.tool_calls.clone().unwrap_or_default();
+    if !native_tcs.is_empty() {
+        native_tcs
+    } else {
+        tools::parse_tool_calls_from_text(&message.content)
+    }
+}
+
+fn response_claims_file_change_without_tool_call(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    let mentions_tmp = lower.contains("/tmp/");
+    let mentions_code_block = content.contains("```");
+    let claims_file_write = [
+        "i created",
+        "i've created",
+        "i saved",
+        "i wrote",
+        "i made",
+        "created the file",
+        "saved the file",
+        "written to",
+        "file has been created",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase));
+
+    (mentions_tmp && claims_file_write) || mentions_code_block
+}
+
 pub fn get_coding_system_prompt() -> String {
     format!(
         "You are a coding assistant with direct filesystem access via tools. \
@@ -485,53 +515,79 @@ pub async fn chat_with_ollama(
         .map_err(|e| format!("Failed to build reqwest client: {e}"))?;
 
     let url = format!("{}/api/chat", ollama_url);
+    let requested_tools = tools.clone();
+    let mut active_tools = tools;
+    let mut working_messages = messages;
+    let mut corrected_tool_retry = false;
 
-    let do_request = |tools: Option<Vec<tools::ToolDefinition>>| {
-        let client = &client;
-        let url = &url;
-        let model = model.to_string();
-        let messages = messages.clone();
-        async move {
-            let request = OllamaChatRequest {
-                model,
-                messages,
-                stream: false,
-                tools,
-            };
-            let response = client
-                .post(url)
-                .json(&request)
-                .send()
-                .await
-                .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
+    loop {
+        let request = OllamaChatRequest {
+            model: model.to_string(),
+            messages: working_messages.clone(),
+            stream: false,
+            tools: active_tools.clone(),
+        };
+        let response = client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to connect to Ollama: {e}"))?;
 
-            let status = response.status();
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|e| format!("Failed to read Ollama response body: {e}"))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read Ollama response body: {e}"))?;
 
-            let text = String::from_utf8_lossy(&bytes).to_string();
+        let text = String::from_utf8_lossy(&bytes).to_string();
 
-            if !status.is_success() {
-                return Err(format!("Ollama returned error {status}: {text}"));
+        if !status.is_success() {
+            let err = format!("Ollama returned error {status}: {text}");
+            if active_tools.is_some() && (err.contains("does not support tools") || err.contains("not supported")) {
+                log::warn!("Model does not support tools, retrying without: {err}");
+                active_tools = None;
+                continue;
+            }
+            return Err(err);
+        }
+
+        let resp: OllamaChatResponse = serde_json::from_str(&text).map_err(|e| {
+            let preview: String = text.chars().take(500).collect();
+            format!("Failed to parse Ollama response ({e}): {preview}")
+        })?;
+        let tool_calls = extract_tool_calls_from_response(&resp.message);
+        let clean_text = tools::strip_tool_calls_from_text(&resp.message.content);
+
+        if requested_tools.is_some()
+            && tool_calls.is_empty()
+            && response_claims_file_change_without_tool_call(&clean_text)
+        {
+            if corrected_tool_retry {
+                return Err(
+                    "Model claimed to create or modify a file without issuing a tool call."
+                        .to_string(),
+                );
             }
 
-            let data: OllamaChatResponse = serde_json::from_str(&text).map_err(|e| {
-                let preview: String = text.chars().take(500).collect();
-                format!("Failed to parse Ollama response ({e}): {preview}")
-            })?;
-            Ok(data)
+            corrected_tool_retry = true;
+            working_messages.push(OllamaChatMessage {
+                role: "assistant".to_string(),
+                content: clean_text,
+                tool_calls: None,
+                name: None,
+            });
+            working_messages.push(OllamaChatMessage {
+                role: "system".to_string(),
+                content: "Your previous reply claimed that a file was created or showed code, but no tool call was emitted and no filesystem change happened. Retry now. If you intend to create or edit a file, respond with a <tool_call> for write_file or edit_file and do not claim success in plain text first.".to_string(),
+                tool_calls: None,
+                name: None,
+            });
+            active_tools = requested_tools.clone();
+            continue;
         }
-    };
 
-    match do_request(tools.clone()).await {
-        Ok(resp) => Ok(resp),
-        Err(e) if tools.is_some() && (e.contains("does not support tools") || e.contains("not supported")) => {
-            log::warn!("Model does not support tools, retrying without: {e}");
-            do_request(None).await
-        }
-        Err(e) => Err(e),
+        return Ok(resp);
     }
 }
 

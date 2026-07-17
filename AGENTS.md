@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-pj is a local-first Rust AI chat app. It provides a web UI (Actix-web) and a TUI/CLI (Ratatui), both backed by Ollama for inference and SQLite for chat persistence. No cloud dependencies.
+pj is a local-first Rust AI chat app. It provides a web UI (Actix-web) and a CLI with both a Ratatui fullscreen mode and a plain terminal mode, all backed by Ollama for inference and SQLite for chat persistence. No cloud dependencies.
 
 ## Build & Run
 
@@ -13,8 +13,16 @@ cargo build --release
 # Web UI (default binary)
 cargo run --release --bin pj-web
 
-# CLI TUI or one-shot
+# CLI default interactive mode
 cargo run --release --bin pj
+
+# CLI plain terminal mode
+cargo run --release --bin pj -- --plain
+
+# CLI force fullscreen TUI mode
+cargo run --release --bin pj -- --tui
+
+# CLI one-shot
 cargo run --release --bin pj -- "your question here"
 
 # Lint / typecheck (Rust — cargo check covers this)
@@ -28,10 +36,11 @@ There are no unit tests. `cargo check` is the verification step.
 ```
 src/
   main.rs   — pj-web binary: Actix-web server, REST API, serves static UI
-  cli.rs    — pj binary: Ratatui TUI + one-shot CLI mode
-  lib.rs    — Shared: DB (SQLite via r2d2), Ollama API client, types
+  cli.rs    — pj binary: Ratatui TUI, plain terminal mode, one-shot CLI mode
+  lib.rs    — Shared: DB (SQLite via r2d2), Ollama API client, prompts, tool enforcement, types
   tools.rs  — Tool definitions, execution, text-based tool call parsing
 static/     — Web UI frontend (HTML/JS/CSS)
+  fonts/    — Bundled web fonts including local CJK coverage
 data/       — SQLite database (chat.db)
 ```
 
@@ -41,8 +50,10 @@ data/       — SQLite database (chat.db)
   - `POST /api/chat` — streaming generate (basic, no tools)
   - `POST /api/chat/tools` — chat with tool support (sessions)
   - `POST /api/chat/tools/confirm` — approve/deny tool execution
+  - `GET /api/events` — server-sent events for chat change sync
+  - `POST /api/write-file` — direct web save helper for code blocks
   - CRUD for chats/messages
-- **pj** (`cli.rs`): TUI (interactive) or one-shot (pass question as args). Shares the same SQLite DB as the web UI.
+- **pj** (`cli.rs`): default interactive mode, plain terminal mode (`--plain`), fullscreen TUI (`--tui`), or one-shot (pass question as args). Shares the same SQLite DB as the web UI.
 
 ### Ollama Integration
 
@@ -52,6 +63,7 @@ data/       — SQLite database (chat.db)
 - Web UI tool chat and CLI use `/api/chat` (non-streaming, with tools)
 - `chat_with_ollama()` in `lib.rs` is the shared chat API client
 - If the model doesn't support tools, `chat_with_ollama` auto-retries without them
+- `chat_with_ollama` now also performs shared enforcement for tool-enabled flows, including rejecting file-creation claims that were not backed by a real tool call
 
 ### Tool System
 
@@ -62,6 +74,8 @@ Two tool detection paths:
 2. **Text fallback**: `parse_tool_calls_from_text()` extracts `<tool_call>` XML tags from response text
 
 Tool execution requires user confirmation in both CLI (y/N prompt) and web UI (confirm endpoint).
+
+Behavioral guarantees should be enforced in Rust wherever practical, not only described in the system prompt. When changing tool behavior, prefer shared checks in `lib.rs`/`tools.rs` over adding more prompt text.
 
 ### Database
 
@@ -79,10 +93,14 @@ DB path: `DATABASE_URL` env var (default `data/chat.db`).
 - Serialization: serde + serde_json, `#[serde(skip_serializing_if)]` for optional fields
 - Environment config: `get_env_or(key, default)` pattern throughout
 - Frontend: vanilla JS in `static/`, no build step
+- Documentation hygiene: when code changes behavior, verify `AGENTS.md` and `README.md` still match the current code and update them in the same change when needed
 
 ## Known Quirks
 
 - Models that don't support tools (like gemma2) will error on `/api/chat` with tools — the auto-retry handles this
 - `OllamaChatMessage.content` uses a custom deserializer to handle `null` from Ollama (models return null content when issuing tool calls)
 - The TUI uses crossterm raw mode + alternate screen; panics in the TUI loop will leave the terminal in a broken state (run `reset` to fix)
+- On systems without a CJK-capable monospace terminal font, the default interactive CLI auto-falls back to plain mode; `--tui` and `PJ_FORCE_TUI=1` override that
+- Web UI Chinese rendering depends on the bundled local `Noto Sans CJK SC` font in `static/fonts/`; CLI Chinese rendering still depends on terminal font support and may require a terminal restart after font installation
+- The tool-enabled flows still support text `<tool_call>` fallback for models without native tool support, so prompt and parser changes can affect both CLI and web
 - Both binaries share `lib.rs` — changes to Ollama types affect both
