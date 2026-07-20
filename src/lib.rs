@@ -40,7 +40,7 @@ pub fn database_url() -> String {
 }
 
 pub fn model_name() -> String {
-    get_env_or("MODEL_NAME", "gemma2:9b")
+    get_env_or("MODEL_NAME", "qwen2.5:3b")
 }
 
 pub fn ollama_url() -> String {
