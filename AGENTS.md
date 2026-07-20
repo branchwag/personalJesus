@@ -60,7 +60,7 @@ data/       — SQLite database (chat.db)
 ### Ollama Integration
 
 - Base URL: `OLLAMA_URL` env var (default `http://localhost:11434`)
-- Model: `MODEL_NAME` env var (default `gemma2:9b`)
+- Model selection: `resolve_model()` in `lib.rs` checks `MODEL_NAME` first, then `MODEL_PRESET` (speed|balanced|quality), defaulting to `qwen2.5:3b`
 - Web UI basic chat uses `/api/generate` (simple, streaming, no tools)
 - Web UI tool chat and CLI use `/api/chat` (non-streaming, with tools)
 - `chat_with_ollama()` in `lib.rs` is the shared chat API client

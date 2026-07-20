@@ -12,16 +12,20 @@ A fully offline, local-first Rust AI chat app. Everything runs on your machine â
    - [Rust](https://rustup.rs/) (1.75 or newer)
    - [Ollama](https://ollama.ai/) installed locally
 
-2. **Pull the model**:
+2. **Pull a model** (or use the default via presets):
    ```bash
-   ollama pull gemma2:9b
+   ollama pull qwen2.5:3b
    ```
 
-3. **Set environment variables**:
+3. **Set environment variables** (all optional):
    ```bash
    export OLLAMA_URL=http://localhost:11434
-   export MODEL_NAME=gemma2:9b
+   export MODEL_PRESET=balanced   # speed | balanced (default) | quality
    export PORT=8080
+   ```
+   Or override the model directly:
+   ```bash
+   export MODEL_NAME=gemma2:9b
    ```
 
 4. **Run the application**:
@@ -31,6 +35,18 @@ A fully offline, local-first Rust AI chat app. Everything runs on your machine â
 
 5. **Access the app**:
    Open your browser to [http://localhost:8080](http://localhost:8080)
+
+## Model Presets
+
+pj supports model presets for easy speed/quality tuning. Set `MODEL_PRESET` to choose one:
+
+| Preset      | Model         | Notes                                     |
+|-------------|---------------|-------------------------------------------|
+| `speed`     | qwen2.5:1.5b  | Fastest responses, lowest quality         |
+| `balanced`  | qwen2.5:3b    | Good speed/quality tradeoff (default)     |
+| `quality`   | qwen2.5:7b    | Best quality, slower on CPU               |
+
+`MODEL_NAME` always takes precedence over `MODEL_PRESET` if both are set.
 
 ## CLI Tool
 

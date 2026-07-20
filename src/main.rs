@@ -600,6 +600,8 @@ async fn main() -> std::io::Result<()> {
     let event_tx = start_event_server();
     info!("Event socket at {}", socket_path().display());
 
+    let model = model_name();
+    info!("Model: {model}");
     info!("Starting server on http://0.0.0.0:{}", port);
 
     let pool_data = web::Data::new(pool);

@@ -39,8 +39,30 @@ pub fn database_url() -> String {
     env::var("DATABASE_URL").unwrap_or_else(|_| default_database_url())
 }
 
+fn model_presets() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        ("speed", "qwen2.5:1.5b", "Fastest responses, lowest quality"),
+        ("balanced", "qwen2.5:3b", "Good speed/quality tradeoff (default)"),
+        ("quality", "qwen2.5:7b", "Best quality, slower on CPU"),
+    ]
+}
+
+pub fn resolve_model() -> String {
+    if let Ok(name) = env::var("MODEL_NAME") {
+        return name;
+    }
+    let preset = get_env_or("MODEL_PRESET", "balanced");
+    for (key, model, _) in model_presets() {
+        if *key == preset {
+            return model.to_string();
+        }
+    }
+    eprintln!("Unknown MODEL_PRESET '{preset}', using balanced default");
+    "qwen2.5:3b".to_string()
+}
+
 pub fn model_name() -> String {
-    get_env_or("MODEL_NAME", "qwen2.5:3b")
+    resolve_model()
 }
 
 pub fn ollama_url() -> String {
